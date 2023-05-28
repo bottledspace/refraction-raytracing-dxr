@@ -1,4 +1,4 @@
-#include "Refraction.hpp"
+#include "RefractionDemo.hpp"
 #include <Windows.h>
 #include <WindowsX.h>
 
@@ -41,18 +41,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lspzCmdLi
                              CW_USEDEFAULT, CW_USEDEFAULT, 640, 480,
                              nullptr, nullptr, hInstance, nullptr);
 
-
-    createDevice();
-    createConstants();
-    loadMesh(cubeMesh, "../monkey.obj");
-    uploadMesh(cubeMesh);
-    uploadConstants();
-    recreateSwapchain(hWnd, 640, 480);
-    createSignature();
-    createPipelineState();
+    RefractionDemo app;
+    app.initialize(hWnd, 640, 480);
 
     ShowWindow(hWnd, nCmdShow);
-    //UpdateWindow(hWnd);
+    UpdateWindow(hWnd);
 
     for (;;) {
         MSG msg;
@@ -63,7 +56,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lspzCmdLi
             if (msg.message == WM_QUIT)
                 return (int)msg.wParam;
         }
-        uploadConstants();
-        drawFrame();
+        app.drawFrame();
     }
 }
