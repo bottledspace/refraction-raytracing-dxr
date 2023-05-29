@@ -15,7 +15,7 @@ private:
     void recreateSwapchain(HWND hwnd, int width, int height);
     void createDevice();
     void createConstants();
-    void createSignature();
+    void createSignatures();
     void createPipelineState();
     void setupRaytracingAccelerationStructures();
     void setupRaytracingPipelineStateObjects();
@@ -40,6 +40,7 @@ private:
     volatile UINT64 fenceValue;
 
     ComPtr<ID3D12RootSignature> rootSignature;
+    ComPtr<ID3D12RootSignature> localRootSignature;
     ComPtr<IDXGISwapChain3> swapchain;
 
     ComPtr<ID3D12Resource> depthStencilBuffer;
@@ -58,5 +59,4 @@ private:
     ComPtr<ID3D12Resource> tlasResult;
     ComPtr<ID3D12Resource> instanceDescs;
     ComPtr<ID3D12PipelineState> rtPSO;
-    ComPtr<ID3D12RootSignature> localRootSignature;
 };

@@ -1,8 +1,8 @@
 struct Payload {
-	float unused;
+	float4 unused;
 };
 struct Attributes {
-	float unused;
+	float4 unused;
 };
 
 [shader("raygeneration")]

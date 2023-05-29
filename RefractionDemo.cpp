@@ -162,15 +162,16 @@ void RefractionDemo::recreateSwapchain(HWND hwnd, int width, int height)
     device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 }
 
-void RefractionDemo::createSignature()
+void RefractionDemo::createSignatures()
 {
     // The root signature is our interface to the shaders. We are simply describing the data here,
     // we provide the contents in drawFrame each frame.
 
+    // Main root signature
+
     CD3DX12_STATIC_SAMPLER_DESC statsample;
     statsample.Init(0);
     statsample.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
 
     CD3DX12_DESCRIPTOR_RANGE1 descRange;
     descRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
@@ -188,6 +189,17 @@ void RefractionDemo::createSignature()
     D3D12SerializeVersionedRootSignature(&rootSigDesc, &serializedSig, nullptr);
     device->CreateRootSignature(0, serializedSig->GetBufferPointer(),
         serializedSig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+
+
+    // Local root signature (for raytracing)
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC localRootSigDesc;
+    localRootSigDesc.Init_1_1(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    localRootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+    ComPtr<ID3DBlob> serializedLocalRootSig;
+    D3D12SerializeVersionedRootSignature(&localRootSigDesc, &serializedLocalRootSig, nullptr);
+    device->CreateRootSignature(0, serializedLocalRootSig->GetBufferPointer(),
+        serializedLocalRootSig->GetBufferSize(), IID_PPV_ARGS(&localRootSignature));
 }
 
 void RefractionDemo::createPipelineState()
@@ -332,29 +344,24 @@ IDxcIncludeHandler* includeHandler;
 
 void RefractionDemo::setupRaytracingPipelineStateObjects()
 {
+    D3D12_STATE_SUBOBJECT stateObjects[7];
 
-
-    HRESULT res;
-
-    assert(SUCCEEDED(res = dxcHelper.Initialize()));
-    assert(SUCCEEDED(res = dxcHelper.CreateInstance(CLSID_DxcCompiler, &compiler)));
-    assert(SUCCEEDED(res = dxcHelper.CreateInstance(CLSID_DxcLibrary, &library)));
-    assert(SUCCEEDED(res = library->CreateIncludeHandler(&includeHandler)));
+    dxcHelper.Initialize();
+    dxcHelper.CreateInstance(CLSID_DxcCompiler, &compiler);
+    dxcHelper.CreateInstance(CLSID_DxcLibrary, &library);
+    library->CreateIncludeHandler(&includeHandler);
 
     UINT32 codePage = 0;
     IDxcBlobEncoding* shaderText;
     IDxcOperationResult* result;
-    assert(SUCCEEDED(res = library->CreateBlobFromFile(L"../RayTracing.hlsl", &codePage, &shaderText)));
-    assert(SUCCEEDED(res = compiler->Compile(shaderText, L"../RayTracing.hlsl", nullptr, L"lib_6_3",
-        nullptr, 0, nullptr, 0, includeHandler, &result)));
-    assert(SUCCEEDED(res = result->GetResult(&rayGenBytecode)));
+    library->CreateBlobFromFile(L"../RayTracing.hlsl", &codePage, &shaderText);
+    compiler->Compile(shaderText, L"../RayTracing.hlsl", nullptr, L"lib_6_3",
+        nullptr, 0, nullptr, 0, includeHandler, &result);
+    result->GetResult(&rayGenBytecode);
  
     IDxcBlobEncoding* error;
     result->GetErrorBuffer(&error);
     OutputDebugStringA((char*)error->GetBufferPointer());
-
-    CD3DX12_ROOT_SIGNATURE_DESC localRootSignatureDesc(0, nullptr);
-    localRootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
     
     D3D12_EXPORT_DESC entryDesc[3] = {};
     entryDesc[0].Name = L"RayGen";
@@ -380,17 +387,35 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     shaderConfigDesc.MaxAttributeSizeInBytes = sizeof(float)*4;
     shaderConfigDesc.MaxPayloadSizeInBytes = D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
 
-    D3D12_STATE_SUBOBJECT stateObjects[4];
+    D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION payloadAssociationDesc = {};
+    const static wchar_t* payloadExports[] = { L"RayGen", L"HitGroup" };
+    payloadAssociationDesc.NumExports = _countof(payloadExports);
+    payloadAssociationDesc.pExports = payloadExports;
+    payloadAssociationDesc.pSubobjectToAssociate = &stateObjects[2];
+
+    D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION rootsigAssociationDesc = {};
+    const static wchar_t* rootsigExports[] = { L"RayGen", L"ClosestHit", L"AnyHit", L"HitGroup" };
+    rootsigAssociationDesc.NumExports = _countof(rootsigExports);
+    rootsigAssociationDesc.pExports = rootsigExports;
+    rootsigAssociationDesc.pSubobjectToAssociate = &stateObjects[4];
+    
+    D3D12_LOCAL_ROOT_SIGNATURE localRootSig = {};
+    localRootSig.pLocalRootSignature = localRootSignature.Get();
+
     stateObjects[0].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
     stateObjects[0].pDesc = &dxilDesc;
     stateObjects[1].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
     stateObjects[1].pDesc = &pipelineConfigDesc;
     stateObjects[2].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
     stateObjects[2].pDesc = &shaderConfigDesc;
-    /*stateObjects[2].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-    stateObjects[2].pDesc = localRootSignature.Get();*/
     stateObjects[3].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
     stateObjects[3].pDesc = &hitGroupDesc;
+    stateObjects[4].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
+    stateObjects[4].pDesc = &localRootSig;
+    stateObjects[5].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+    stateObjects[5].pDesc = &payloadAssociationDesc;
+    stateObjects[6].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+    stateObjects[6].pDesc = &rootsigAssociationDesc;
 
     D3D12_STATE_OBJECT_DESC stateObjectDesc;
     stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
@@ -416,12 +441,13 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
     device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
 
     createConstants();
+    createSignatures();
     cubeMesh.load("../monkey.obj");
     cubeMesh.upload(device);
     setupRaytracingAccelerationStructures();
     setupRaytracingPipelineStateObjects();
     recreateSwapchain(hWnd, 640, 480);
-    createSignature();
+
     createPipelineState();
 
     commandList->Close();
