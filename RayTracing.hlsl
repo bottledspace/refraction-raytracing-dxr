@@ -1,17 +1,28 @@
-void Main()
+struct Payload {
+	float unused;
+};
+struct Attributes {
+	float unused;
+};
+
+[shader("raygeneration")]
+void RayGen()
 {
 }
 
-void ClosestHit()
+[shader("closesthit")]
+void ClosestHit(inout Payload payload, in Attributes attrs)
 {
 
 }
 
-void AnyHit()
+[shader("anyhit")]
+void AnyHit(inout Payload payload, in Attributes attrs)
 {
 
 }
 
+[shader("intersection")]
 void Intersection()
 {
 

@@ -2,6 +2,7 @@
 #include <sstream>
 #include <fstream>
 #include <vector>
+#include <assert.h>
 
 struct Camera
 {
@@ -323,37 +324,54 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     commandList->BuildRaytracingAccelerationStructure(&topLevelDesc, 0, nullptr);
 }
 
+IDxcBlob* rayGenBytecode;
+dxc::DxcDllSupport dxcHelper;
+IDxcCompiler* compiler;
+IDxcLibrary* library;
+IDxcIncludeHandler* includeHandler;
+
 void RefractionDemo::setupRaytracingPipelineStateObjects()
 {
-    ComPtr<ID3DBlob> shader;
 
-#ifdef _DEBUG
-    // Enable better shader debugging with the graphics debugging tools.
-    UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    UINT compileFlags = 0;
-#endif
 
-    ComPtr<ID3DBlob> errMsg;
-    if (S_OK != D3DCompileFromFile(L"../RayTracing.hlsl", nullptr, nullptr, "Main", "vs_5_0", compileFlags, 0, &shader, &errMsg))
-        OutputDebugStringA((char*)errMsg->GetBufferPointer());
+    HRESULT res;
 
-    D3D12_EXPORT_DESC entryDesc = {};
-    entryDesc.Name = L"Main";            // What do we call it outside the shader
-    entryDesc.ExportToRename = L"Main";  // What is it called in the shader
-    entryDesc.Flags = D3D12_EXPORT_FLAG_NONE;
+    assert(SUCCEEDED(res = dxcHelper.Initialize()));
+    assert(SUCCEEDED(res = dxcHelper.CreateInstance(CLSID_DxcCompiler, &compiler)));
+    assert(SUCCEEDED(res = dxcHelper.CreateInstance(CLSID_DxcLibrary, &library)));
+    assert(SUCCEEDED(res = library->CreateIncludeHandler(&includeHandler)));
+
+    UINT32 codePage = 0;
+    IDxcBlobEncoding* shaderText;
+    IDxcOperationResult* result;
+    assert(SUCCEEDED(res = library->CreateBlobFromFile(L"../RayTracing.hlsl", &codePage, &shaderText)));
+    assert(SUCCEEDED(res = compiler->Compile(shaderText, L"../RayTracing.hlsl", nullptr, L"lib_6_3",
+        nullptr, 0, nullptr, 0, includeHandler, &result)));
+    assert(SUCCEEDED(res = result->GetResult(&rayGenBytecode)));
+ 
+    IDxcBlobEncoding* error;
+    result->GetErrorBuffer(&error);
+    OutputDebugStringA((char*)error->GetBufferPointer());
+
+    CD3DX12_ROOT_SIGNATURE_DESC localRootSignatureDesc(0, nullptr);
+    localRootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+    
+    D3D12_EXPORT_DESC entryDesc[3] = {};
+    entryDesc[0].Name = L"RayGen";
+    entryDesc[1].Name = L"AnyHit";
+    entryDesc[2].Name = L"ClosestHit";
 
     D3D12_DXIL_LIBRARY_DESC dxilDesc;
-    dxilDesc.DXILLibrary.BytecodeLength = shader->GetBufferSize();
-    dxilDesc.DXILLibrary.pShaderBytecode = shader->GetBufferPointer();
-    dxilDesc.NumExports = 1;
-    dxilDesc.pExports = &entryDesc;
+    dxilDesc.DXILLibrary.BytecodeLength = rayGenBytecode->GetBufferSize();
+    dxilDesc.DXILLibrary.pShaderBytecode = rayGenBytecode->GetBufferPointer();
+    dxilDesc.NumExports = _countof(entryDesc);
+    dxilDesc.pExports = entryDesc;
+    
 
     D3D12_HIT_GROUP_DESC hitGroupDesc = {};
     hitGroupDesc.ClosestHitShaderImport = L"ClosestHit";
     hitGroupDesc.AnyHitShaderImport = L"AnyHit";
-    hitGroupDesc.IntersectionShaderImport = L"Intersection";
-    hitGroupDesc.HitGroupExport = L"HitGroup1";
+    hitGroupDesc.HitGroupExport = L"HitGroup";
 
     D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfigDesc = {};
     pipelineConfigDesc.MaxTraceRecursionDepth = 1;
@@ -362,17 +380,17 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     shaderConfigDesc.MaxAttributeSizeInBytes = sizeof(float)*4;
     shaderConfigDesc.MaxPayloadSizeInBytes = D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
 
-    D3D12_STATE_SUBOBJECT stateObjects[5];
+    D3D12_STATE_SUBOBJECT stateObjects[4];
     stateObjects[0].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
     stateObjects[0].pDesc = &dxilDesc;
     stateObjects[1].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
     stateObjects[1].pDesc = &pipelineConfigDesc;
     stateObjects[2].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
     stateObjects[2].pDesc = &shaderConfigDesc;
-    stateObjects[3].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-    stateObjects[3].pDesc = localRootSignature.Get();
-    stateObjects[4].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
-    stateObjects[4].pDesc = &hitGroupDesc;
+    /*stateObjects[2].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
+    stateObjects[2].pDesc = localRootSignature.Get();*/
+    stateObjects[3].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
+    stateObjects[3].pDesc = &hitGroupDesc;
 
     D3D12_STATE_OBJECT_DESC stateObjectDesc;
     stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
