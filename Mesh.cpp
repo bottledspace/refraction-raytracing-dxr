@@ -87,7 +87,7 @@ void Mesh::upload(ComPtr<ID3D12Device5>& device)
     ib->Unmap(0, nullptr);
 }
 
-void Mesh::draw(ComPtr<ID3D12Device5>& device, ComPtr<ID3D12GraphicsCommandList4>& cmd)
+void Mesh::draw(ComPtr<ID3D12Device5>& device, ComPtr<ID3D12GraphicsCommandList5>& cmd)
 {
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 

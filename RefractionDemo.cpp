@@ -59,7 +59,11 @@ void RefractionDemo::createDevice()
     // We can use this to enumerate adapters. For now we just pick the default.
     CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factory));
 
-    D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device));
+    D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_2, IID_PPV_ARGS(&device));
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 caps = {};
+    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &caps, sizeof(caps));
+    assert(caps.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0);
 
     D3D12_COMMAND_QUEUE_DESC desc;
     desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
@@ -67,6 +71,8 @@ void RefractionDemo::createDevice()
     desc.Priority = 0;
     desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     device->CreateCommandQueue(&desc, IID_PPV_ARGS(&commandQueue));
+
+
 
     // Cache these GPU sizes.
     rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -81,15 +87,15 @@ void RefractionDemo::createConstants()
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvDesc;
     cbvDesc.NodeMask = 0;
-    cbvDesc.NumDescriptors = 1;
+    cbvDesc.NumDescriptors = 2;
     cbvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     device->CreateDescriptorHeap(&cbvDesc, IID_PPV_ARGS(&cbvHeap));
 
-    D3D12_CONSTANT_BUFFER_VIEW_DESC desc;
+    /*D3D12_CONSTANT_BUFFER_VIEW_DESC desc;
     desc.BufferLocation = cameraConstantBuffer->GetGPUVirtualAddress();
     desc.SizeInBytes = size;
-    device->CreateConstantBufferView(&desc, cbvHeap->GetCPUDescriptorHandleForHeapStart());
+    device->CreateConstantBufferView(&desc, cbvHeap->GetCPUDescriptorHandleForHeapStart());*/
 }
 
 
@@ -132,6 +138,7 @@ void RefractionDemo::recreateSwapchain(HWND hwnd, int width, int height)
        
         swapchain->GetBuffer(i, IID_PPV_ARGS(&renderTargets[i]));
         device->CreateRenderTargetView(renderTargets[i].Get(), nullptr, ptr);
+        renderTargets[i]->SetName(L"RenderTarget ");
         ptr.Offset(1, rtvDescriptorSize);
     }
 
@@ -143,6 +150,7 @@ void RefractionDemo::recreateSwapchain(HWND hwnd, int width, int height)
         D3D12_RESOURCE_STATE_DEPTH_WRITE,
         &CD3DX12_CLEAR_VALUE(DXGI_FORMAT_D32_FLOAT, 1.0f, 0u),
         IID_PPV_ARGS(&depthStencilBuffer));
+    depthStencilBuffer->SetName(L"Depth/Stencil Buffer");
 
     D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc;
     dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
@@ -168,38 +176,30 @@ void RefractionDemo::createSignatures()
     // we provide the contents in drawFrame each frame.
 
     // Main root signature
-
-    CD3DX12_STATIC_SAMPLER_DESC statsample;
-    statsample.Init(0);
-    statsample.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
+    {
     CD3DX12_DESCRIPTOR_RANGE1 descRange;
-    descRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-    
-    CD3DX12_ROOT_PARAMETER1 rp;
-    rp.InitAsDescriptorTable(1, &descRange);
-
-    CD3DX12_STATIC_SAMPLER_DESC sampler;
-    sampler.Init(0);
-
+    descRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0); // RenderTarget
+    CD3DX12_ROOT_PARAMETER1 rp[1];
+    rp[0].InitAsDescriptorTable(1, &descRange);
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
-    rootSigDesc.Init_1_1(1, &rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    rootSigDesc.Init_1_1(_countof(rp), rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
-    ComPtr<ID3DBlob> serializedSig;
-    D3D12SerializeVersionedRootSignature(&rootSigDesc, &serializedSig, nullptr);
-    device->CreateRootSignature(0, serializedSig->GetBufferPointer(),
-        serializedSig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
-
+    ComPtr<ID3DBlob> blob;
+    D3D12SerializeVersionedRootSignature(&rootSigDesc, &blob, nullptr);
+    device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+    rootSignature->SetName(L"Global Root Signature");
+    }
 
     // Local root signature (for raytracing)
-
+    {
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC localRootSigDesc;
     localRootSigDesc.Init_1_1(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
     localRootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
-    ComPtr<ID3DBlob> serializedLocalRootSig;
-    D3D12SerializeVersionedRootSignature(&localRootSigDesc, &serializedLocalRootSig, nullptr);
-    device->CreateRootSignature(0, serializedLocalRootSig->GetBufferPointer(),
-        serializedLocalRootSig->GetBufferSize(), IID_PPV_ARGS(&localRootSignature));
+    ComPtr<ID3DBlob> blob;
+    D3D12SerializeVersionedRootSignature(&localRootSigDesc, &blob, nullptr);
+    device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&localRootSignature));
+    localRootSignature->SetName(L"Local Root Signature");
+    }
 }
 
 void RefractionDemo::createPipelineState()
@@ -363,10 +363,11 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     result->GetErrorBuffer(&error);
     OutputDebugStringA((char*)error->GetBufferPointer());
     
-    D3D12_EXPORT_DESC entryDesc[3] = {};
+    D3D12_EXPORT_DESC entryDesc[4] = {};
     entryDesc[0].Name = L"RayGen";
     entryDesc[1].Name = L"AnyHit";
     entryDesc[2].Name = L"ClosestHit";
+    entryDesc[3].Name = L"Miss";
 
     D3D12_DXIL_LIBRARY_DESC dxilDesc;
     dxilDesc.DXILLibrary.BytecodeLength = rayGenBytecode->GetBufferSize();
@@ -388,19 +389,23 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     shaderConfigDesc.MaxPayloadSizeInBytes = D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
 
     D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION payloadAssociationDesc = {};
-    const static wchar_t* payloadExports[] = { L"RayGen", L"HitGroup" };
+    const static wchar_t* payloadExports[] = { L"RayGen", L"HitGroup", L"Miss" };
     payloadAssociationDesc.NumExports = _countof(payloadExports);
     payloadAssociationDesc.pExports = payloadExports;
     payloadAssociationDesc.pSubobjectToAssociate = &stateObjects[2];
 
     D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION rootsigAssociationDesc = {};
-    const static wchar_t* rootsigExports[] = { L"RayGen", L"ClosestHit", L"AnyHit", L"HitGroup" };
+    const static wchar_t* rootsigExports[] = { L"RayGen", L"ClosestHit", L"AnyHit", L"Miss", L"HitGroup" };
     rootsigAssociationDesc.NumExports = _countof(rootsigExports);
     rootsigAssociationDesc.pExports = rootsigExports;
     rootsigAssociationDesc.pSubobjectToAssociate = &stateObjects[4];
     
+    // For now we wont use this
     D3D12_LOCAL_ROOT_SIGNATURE localRootSig = {};
     localRootSig.pLocalRootSignature = localRootSignature.Get();
+    // And only use this instead.
+    D3D12_GLOBAL_ROOT_SIGNATURE globalRootSig = {};
+    globalRootSig.pGlobalRootSignature = rootSignature.Get();
 
     stateObjects[0].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
     stateObjects[0].pDesc = &dxilDesc;
@@ -410,8 +415,8 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     stateObjects[2].pDesc = &shaderConfigDesc;
     stateObjects[3].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
     stateObjects[3].pDesc = &hitGroupDesc;
-    stateObjects[4].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-    stateObjects[4].pDesc = &localRootSig;
+    stateObjects[4].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+    stateObjects[4].pDesc = &globalRootSig;
     stateObjects[5].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
     stateObjects[5].pDesc = &payloadAssociationDesc;
     stateObjects[6].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
@@ -421,7 +426,40 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
     stateObjectDesc.NumSubobjects = _countof(stateObjects);
     stateObjectDesc.pSubobjects = stateObjects;
-    device->CreateStateObject(&stateObjectDesc, IID_PPV_ARGS(&rtPSO));
+    
+    assert(SUCCEEDED(device->CreateStateObject(&stateObjectDesc, IID_PPV_ARGS(&rtPSO))));
+    rtPSO->SetName(L"RayTracing PSO");
+}
+
+void RefractionDemo::createRaytracingTexture()
+{
+    device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
+        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 640, 480, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&rtTexture));
+    
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+    desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    device->CreateUnorderedAccessView(rtTexture.Get(), nullptr, &desc, cbvHeap->GetCPUDescriptorHandleForHeapStart());
+    rtTexture->SetName(L"RayTracing Texture");
+}
+
+void RefractionDemo::createShaderTables()
+{
+    ComPtr<ID3D12StateObjectProperties> stateObjectProperties;
+    rtPSO.As(&stateObjectProperties);
+    void* rayGenId = stateObjectProperties->GetShaderIdentifier(L"RayGen");
+    void* missId = stateObjectProperties->GetShaderIdentifier(L"Miss");
+    void* hitGroupId = stateObjectProperties->GetShaderIdentifier(L"HitGroup");
+    createUploadBuffer(shaderTable, device, 256);
+    shaderTable->SetName(L"Shader Table");
+    
+    D3D12_RANGE range = {0,0};
+    char* p;
+    shaderTable->Map(0, &range, (void**)&p);
+    memcpy(&p[0], rayGenId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    memcpy(&p[64], hitGroupId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    memcpy(&p[128], missId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    shaderTable->Unmap(0, nullptr);
 }
 
 void RefractionDemo::waitForCommandsToFinish()
@@ -446,9 +484,9 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
     cubeMesh.upload(device);
     setupRaytracingAccelerationStructures();
     setupRaytracingPipelineStateObjects();
+    createRaytracingTexture();
+    createShaderTables();
     recreateSwapchain(hWnd, 640, 480);
-
-    createPipelineState();
 
     commandList->Close();
     ID3D12CommandList* const commandLists[] = { commandList.Get() };
@@ -458,48 +496,39 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
 
 void RefractionDemo::drawFrame()
 {
-    uploadConstants();
+    //uploadConstants();
 
     int frameIdx = swapchain->GetCurrentBackBufferIndex();
 
     commandAllocator->Reset();
-    commandList->Reset(commandAllocator.Get(), pipelineState.Get());
+    commandList->Reset(commandAllocator.Get(), nullptr);
+    commandList->SetDescriptorHeaps(1, cbvHeap.GetAddressOf());
+    commandList->SetComputeRootSignature(rootSignature.Get());
+    commandList->SetComputeRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    ID3D12DescriptorHeap* heaps[] = { cbvHeap.Get() };
-    commandList->SetDescriptorHeaps(1, heaps);
+    D3D12_DISPATCH_RAYS_DESC desc = {};
+    desc.RayGenerationShaderRecord.StartAddress = shaderTable->GetGPUVirtualAddress();
+    desc.RayGenerationShaderRecord.SizeInBytes = 64;
+    desc.HitGroupTable.StartAddress = shaderTable->GetGPUVirtualAddress() + 64;
+    desc.HitGroupTable.SizeInBytes = 64;
+    desc.MissShaderTable.StartAddress = shaderTable->GetGPUVirtualAddress() + 128;
+    desc.MissShaderTable.SizeInBytes = 64;
+    desc.Width = 640;
+    desc.Height = 480;
+    desc.Depth = 1;
 
-    commandList->SetGraphicsRootSignature(rootSignature.Get());
-    commandList->SetGraphicsRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    commandList->SetPipelineState1(rtPSO.Get());
+    commandList->DispatchRays(&desc);
 
-    commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIdx].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-    
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart(), frameIdx, rtvDescriptorSize);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(dsvHeap->GetCPUDescriptorHandleForHeapStart());
-    commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
-
-    D3D12_VIEWPORT viewport;
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.Width = 640;
-    viewport.Height = 480;
-    viewport.MaxDepth = 1;
-    viewport.MinDepth = 0;
-    commandList->RSSetViewports(1, &viewport);
-
-    D3D12_RECT scissorRect;
-    scissorRect.left = 0;
-    scissorRect.right = scissorRect.left + viewport.Width;
-    scissorRect.top = 0;
-    scissorRect.bottom = scissorRect.top + viewport.Height;
-    commandList->RSSetScissorRects(1, &scissorRect);
-
-    const float clearColor[] = { 0.392f, 0.584f, 0.929f, 1.0f };
-    commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-    commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-    cubeMesh.draw(device, commandList);
-
-    commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIdx].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+    D3D12_RESOURCE_BARRIER preCopyBarriers[2];
+    preCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIdx].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+    preCopyBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(rtTexture.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    commandList->ResourceBarrier(_countof(preCopyBarriers), preCopyBarriers);
+    commandList->CopyResource(renderTargets[frameIdx].Get(), rtTexture.Get());
+    D3D12_RESOURCE_BARRIER postCopyBarriers[2];
+    postCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIdx].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+    postCopyBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(rtTexture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    commandList->ResourceBarrier(_countof(postCopyBarriers), postCopyBarriers);
     commandList->Close();
 
     ID3D12CommandList* const commandLists[] = { commandList.Get() };

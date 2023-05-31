@@ -19,6 +19,8 @@ private:
     void createPipelineState();
     void setupRaytracingAccelerationStructures();
     void setupRaytracingPipelineStateObjects();
+    void createRaytracingTexture();
+    void createShaderTables();
     void waitForCommandsToFinish();
 
     Mesh cubeMesh;
@@ -51,12 +53,15 @@ private:
 
     ComPtr<ID3D12CommandQueue> commandQueue;
     ComPtr<ID3D12CommandAllocator> commandAllocator;
-    ComPtr<ID3D12GraphicsCommandList4> commandList;
+    ComPtr<ID3D12GraphicsCommandList5> commandList;
 
+    ComPtr<ID3D12Resource> rtTexture;
     ComPtr<ID3D12Resource> blasScratch;
     ComPtr<ID3D12Resource> blasResult;
     ComPtr<ID3D12Resource> tlasScratch;
     ComPtr<ID3D12Resource> tlasResult;
     ComPtr<ID3D12Resource> instanceDescs;
-    ComPtr<ID3D12PipelineState> rtPSO;
+    ComPtr<ID3D12StateObject> rtPSO;
+    ComPtr<ID3D12Resource> shaderTable;
+    ComPtr<ID3D12DescriptorHeap> descriptorHeap;
 };
