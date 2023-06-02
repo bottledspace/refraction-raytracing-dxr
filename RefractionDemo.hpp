@@ -62,6 +62,9 @@ private:
     ComPtr<ID3D12Resource> tlasResult;
     ComPtr<ID3D12Resource> instanceDescs;
     ComPtr<ID3D12StateObject> rtPSO;
-    ComPtr<ID3D12Resource> shaderTable;
+    ComPtr<ID3D12Resource> raygenTable;
+    ComPtr<ID3D12Resource> hitTable;
+    ComPtr<ID3D12Resource> missTable;
+
     ComPtr<ID3D12DescriptorHeap> descriptorHeap;
 };

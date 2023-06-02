@@ -179,8 +179,9 @@ void RefractionDemo::createSignatures()
     {
     CD3DX12_DESCRIPTOR_RANGE1 descRange;
     descRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0); // RenderTarget
-    CD3DX12_ROOT_PARAMETER1 rp[1];
+    CD3DX12_ROOT_PARAMETER1 rp[2];
     rp[0].InitAsDescriptorTable(1, &descRange);
+    rp[1].InitAsShaderResourceView(0);
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
     rootSigDesc.Init_1_1(_countof(rp), rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -302,7 +303,7 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     bottomLevelDesc.DestAccelerationStructureData = blasResult->GetGPUVirtualAddress();
 
     commandList->BuildRaytracingAccelerationStructure(&bottomLevelDesc, 0, nullptr);
-
+    commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(blasResult.Get()));
 
     D3D12_RAYTRACING_INSTANCE_DESC instanceDesc = {};
     instanceDesc.Transform[0][0] = 1.0f;
@@ -334,6 +335,10 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     topLevelDesc.DestAccelerationStructureData = tlasResult->GetGPUVirtualAddress();
 
     commandList->BuildRaytracingAccelerationStructure(&topLevelDesc, 0, nullptr);
+    tlasResult->SetName(L"TopLevel Acceleration Struct Result");
+    tlasScratch->SetName(L"TopLevel Acceleration Struct Scratch");
+    blasResult->SetName(L"BottomLevel Acceleration Struct Result");
+    blasScratch->SetName(L"BottomLevel Acceleration Struct Scratch");
 }
 
 IDxcBlob* rayGenBytecode;
@@ -344,8 +349,6 @@ IDxcIncludeHandler* includeHandler;
 
 void RefractionDemo::setupRaytracingPipelineStateObjects()
 {
-    D3D12_STATE_SUBOBJECT stateObjects[7];
-
     dxcHelper.Initialize();
     dxcHelper.CreateInstance(CLSID_DxcCompiler, &compiler);
     dxcHelper.CreateInstance(CLSID_DxcLibrary, &library);
@@ -358,34 +361,37 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     compiler->Compile(shaderText, L"../RayTracing.hlsl", nullptr, L"lib_6_3",
         nullptr, 0, nullptr, 0, includeHandler, &result);
     result->GetResult(&rayGenBytecode);
- 
+
     IDxcBlobEncoding* error;
     result->GetErrorBuffer(&error);
     OutputDebugStringA((char*)error->GetBufferPointer());
-    
-    D3D12_EXPORT_DESC entryDesc[4] = {};
-    entryDesc[0].Name = L"RayGen";
-    entryDesc[1].Name = L"AnyHit";
-    entryDesc[2].Name = L"ClosestHit";
-    entryDesc[3].Name = L"Miss";
 
-    D3D12_DXIL_LIBRARY_DESC dxilDesc;
+#if 0
+    D3D12_STATE_SUBOBJECT stateObjects[7];
+    
+    D3D12_EXPORT_DESC entryDesc[3] = {};
+    entryDesc[0].Name = L"RayGen";
+    entryDesc[1].Name = L"ClosestHit";
+    entryDesc[2].Name = L"Miss";
+
+    D3D12_DXIL_LIBRARY_DESC dxilDesc = {};
     dxilDesc.DXILLibrary.BytecodeLength = rayGenBytecode->GetBufferSize();
     dxilDesc.DXILLibrary.pShaderBytecode = rayGenBytecode->GetBufferPointer();
+    // If we omit this it makes all the functions visible.
     dxilDesc.NumExports = _countof(entryDesc);
     dxilDesc.pExports = entryDesc;
     
 
     D3D12_HIT_GROUP_DESC hitGroupDesc = {};
     hitGroupDesc.ClosestHitShaderImport = L"ClosestHit";
-    hitGroupDesc.AnyHitShaderImport = L"AnyHit";
     hitGroupDesc.HitGroupExport = L"HitGroup";
+    hitGroupDesc.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
 
     D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfigDesc = {};
     pipelineConfigDesc.MaxTraceRecursionDepth = 1;
 
     D3D12_RAYTRACING_SHADER_CONFIG shaderConfigDesc = {};
-    shaderConfigDesc.MaxAttributeSizeInBytes = sizeof(float)*4;
+    shaderConfigDesc.MaxAttributeSizeInBytes = sizeof(DirectX::XMFLOAT4);
     shaderConfigDesc.MaxPayloadSizeInBytes = D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
 
     D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION payloadAssociationDesc = {};
@@ -395,7 +401,7 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     payloadAssociationDesc.pSubobjectToAssociate = &stateObjects[2];
 
     D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION rootsigAssociationDesc = {};
-    const static wchar_t* rootsigExports[] = { L"RayGen", L"ClosestHit", L"AnyHit", L"Miss", L"HitGroup" };
+    const static wchar_t* rootsigExports[] = { L"RayGen", L"ClosestHit", L"Miss", L"HitGroup" };
     rootsigAssociationDesc.NumExports = _countof(rootsigExports);
     rootsigAssociationDesc.pExports = rootsigExports;
     rootsigAssociationDesc.pSubobjectToAssociate = &stateObjects[4];
@@ -421,13 +427,46 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     stateObjects[5].pDesc = &payloadAssociationDesc;
     stateObjects[6].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
     stateObjects[6].pDesc = &rootsigAssociationDesc;
-
-    D3D12_STATE_OBJECT_DESC stateObjectDesc;
-    stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+#endif
+    CD3DX12_STATE_OBJECT_DESC stateObjectDesc(D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
+    //D3D12_STATE_OBJECT_DESC stateObjectDesc;
+    /*stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
     stateObjectDesc.NumSubobjects = _countof(stateObjects);
-    stateObjectDesc.pSubobjects = stateObjects;
-    
-    assert(SUCCEEDED(device->CreateStateObject(&stateObjectDesc, IID_PPV_ARGS(&rtPSO))));
+    stateObjectDesc.pSubobjects = stateObjects;*/
+
+    {
+    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+    subobj->SetDXILLibrary(&CD3DX12_SHADER_BYTECODE(rayGenBytecode->GetBufferPointer(), rayGenBytecode->GetBufferSize()));
+    subobj->DefineExport(L"RayGen");
+    subobj->DefineExport(L"Miss");
+    subobj->DefineExport(L"ClosestHit");
+    }
+    {
+    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
+    subobj->SetHitGroupExport(L"HitGroup");
+    subobj->SetClosestHitShaderImport(L"ClosestHit");
+    subobj->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
+    }
+    {
+    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_SHADER_CONFIG_SUBOBJECT>();
+    subobj->Config(sizeof(DirectX::XMFLOAT4), sizeof(DirectX::XMFLOAT2));
+    }
+    {
+    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
+    subobj->SetRootSignature(localRootSignature.Get());
+    auto assocSubobj = stateObjectDesc.CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
+    assocSubobj->SetSubobjectToAssociate(*subobj);
+    assocSubobj->AddExport(L"HitGroup");
+    }
+    {
+    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_GLOBAL_ROOT_SIGNATURE_SUBOBJECT>();
+    subobj->SetRootSignature(rootSignature.Get());
+    }
+    {
+    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT>();
+    subobj->Config(1);
+    }
+    assert(SUCCEEDED(device->CreateStateObject(stateObjectDesc, IID_PPV_ARGS(&rtPSO))));
     rtPSO->SetName(L"RayTracing PSO");
 }
 
@@ -450,16 +489,27 @@ void RefractionDemo::createShaderTables()
     void* rayGenId = stateObjectProperties->GetShaderIdentifier(L"RayGen");
     void* missId = stateObjectProperties->GetShaderIdentifier(L"Miss");
     void* hitGroupId = stateObjectProperties->GetShaderIdentifier(L"HitGroup");
-    createUploadBuffer(shaderTable, device, 256);
-    shaderTable->SetName(L"Shader Table");
-    
-    D3D12_RANGE range = {0,0};
+
+    D3D12_RANGE range = { 0,0 };
     char* p;
-    shaderTable->Map(0, &range, (void**)&p);
+
+    createUploadBuffer(raygenTable, device, 64);
+    raygenTable->SetName(L"RayGen Table");
+    raygenTable->Map(0, &range, (void**)&p);
     memcpy(&p[0], rayGenId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    memcpy(&p[64], hitGroupId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    memcpy(&p[128], missId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    shaderTable->Unmap(0, nullptr);
+    raygenTable->Unmap(0, nullptr);
+
+    createUploadBuffer(hitTable, device, 64);
+    hitTable->SetName(L"Hit Table");
+    hitTable->Map(0, &range, (void**)&p);
+    memcpy(&p[0], hitGroupId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    hitTable->Unmap(0, nullptr);
+
+    createUploadBuffer(missTable, device, 64);
+    missTable->SetName(L"Miss Table");
+    missTable->Map(0, &range, (void**)&p);
+    memcpy(&p[0], missId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    missTable->Unmap(0, nullptr);
 }
 
 void RefractionDemo::waitForCommandsToFinish()
@@ -480,7 +530,7 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
 
     createConstants();
     createSignatures();
-    cubeMesh.load("../monkey.obj");
+    cubeMesh.load("../cube.obj");
     cubeMesh.upload(device);
     setupRaytracingAccelerationStructures();
     setupRaytracingPipelineStateObjects();
@@ -505,14 +555,17 @@ void RefractionDemo::drawFrame()
     commandList->SetDescriptorHeaps(1, cbvHeap.GetAddressOf());
     commandList->SetComputeRootSignature(rootSignature.Get());
     commandList->SetComputeRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    commandList->SetComputeRootShaderResourceView(1, tlasResult->GetGPUVirtualAddress());
 
     D3D12_DISPATCH_RAYS_DESC desc = {};
-    desc.RayGenerationShaderRecord.StartAddress = shaderTable->GetGPUVirtualAddress();
+    desc.RayGenerationShaderRecord.StartAddress = raygenTable->GetGPUVirtualAddress();
     desc.RayGenerationShaderRecord.SizeInBytes = 64;
-    desc.HitGroupTable.StartAddress = shaderTable->GetGPUVirtualAddress() + 64;
+    desc.HitGroupTable.StartAddress = hitTable->GetGPUVirtualAddress();
     desc.HitGroupTable.SizeInBytes = 64;
-    desc.MissShaderTable.StartAddress = shaderTable->GetGPUVirtualAddress() + 128;
+    desc.HitGroupTable.StrideInBytes = 64;
+    desc.MissShaderTable.StartAddress = missTable->GetGPUVirtualAddress();
     desc.MissShaderTable.SizeInBytes = 64;
+    desc.MissShaderTable.StrideInBytes = 64;
     desc.Width = 640;
     desc.Height = 480;
     desc.Depth = 1;
