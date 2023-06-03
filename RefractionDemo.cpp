@@ -4,12 +4,6 @@
 #include <vector>
 #include <assert.h>
 
-struct Camera
-{
-    DirectX::XMFLOAT4X4 proj;
-    DirectX::XMFLOAT4X4 view;
-} camera;
-
 
 void createUploadBuffer(ComPtr<ID3D12Resource>& resource, ComPtr<ID3D12Device5>& device, unsigned size)
 {
@@ -82,7 +76,7 @@ void RefractionDemo::createDevice()
 
 void RefractionDemo::createConstants()
 {
-    unsigned size = (sizeof(Camera) + 255u) & ~255u;
+    unsigned size = (sizeof(DirectX::XMFLOAT4X4) + 255u) & ~255u;
     createUploadBuffer(cameraConstantBuffer, device, size);
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvDesc;
@@ -179,9 +173,10 @@ void RefractionDemo::createSignatures()
     {
     CD3DX12_DESCRIPTOR_RANGE1 descRange;
     descRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0); // RenderTarget
-    CD3DX12_ROOT_PARAMETER1 rp[2];
+    CD3DX12_ROOT_PARAMETER1 rp[3];
     rp[0].InitAsDescriptorTable(1, &descRange);
     rp[1].InitAsShaderResourceView(0);
+    rp[2].InitAsConstantBufferView(0);
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
     rootSigDesc.Init_1_1(_countof(rp), rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -250,14 +245,26 @@ void RefractionDemo::createPipelineState()
 void RefractionDemo::uploadConstants()
 {
     static float angle = 0.01f;
-    XMStoreFloat4x4(&camera.proj, DirectX::XMMatrixPerspectiveFovLH(3.14f / 2.0f, 1.333f, 0.1f, 200.0f));
-    XMStoreFloat4x4(&camera.view, DirectX::XMMatrixRotationY(angle) * DirectX::XMMatrixTranslation(0, 0, 10));
-    copyToBuffer(cameraConstantBuffer, &camera, sizeof(Camera));
+    auto proj = DirectX::XMMatrixPerspectiveFovLH(3.14f/2.0, 640.0/480.0, 0.1f, 100.0f);
+    auto mv = DirectX::XMMatrixTranslation(0, 0, 10)*DirectX::XMMatrixRotationX(angle);
+
+    const DirectX::XMMATRIX mvp(
+        10, 0, 0, 0,
+        0, -10, 0, 0,
+        0, 0, -0.831807, -0.166528,
+        0, 0, -0.831807, 0.833472);
+
+    DirectX::XMFLOAT4X4 mvp_inv;
+    DirectX::XMStoreFloat4x4(&mvp_inv, DirectX::XMMatrixInverse(nullptr, mv*proj));
+    copyToBuffer(cameraConstantBuffer, &mvp_inv, sizeof(mvp_inv));
     angle += 0.01f;
 }
 
 void RefractionDemo::setupRaytracingAccelerationStructures()
 {
+    // A top and bottom level acceleration structure must be defined for the
+    // geometry. This is essentially a BVH.
+
     D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc = cubeMesh.raytracingGeometry();
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottomLevelInputs = {};
@@ -349,6 +356,9 @@ IDxcIncludeHandler* includeHandler;
 
 void RefractionDemo::setupRaytracingPipelineStateObjects()
 {
+    // Compile the shaders as a library. To do this we need to import a DLL
+    // since we need a recent HLSL compiler.
+
     dxcHelper.Initialize();
     dxcHelper.CreateInstance(CLSID_DxcCompiler, &compiler);
     dxcHelper.CreateInstance(CLSID_DxcLibrary, &library);
@@ -362,110 +372,46 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
         nullptr, 0, nullptr, 0, includeHandler, &result);
     result->GetResult(&rayGenBytecode);
 
-    IDxcBlobEncoding* error;
-    result->GetErrorBuffer(&error);
-    OutputDebugStringA((char*)error->GetBufferPointer());
+    HRESULT compilationStatus;
+    result->GetStatus(&compilationStatus);
+    if (FAILED(compilationStatus)) {
+        IDxcBlobEncoding* error;
+        result->GetErrorBuffer(&error);
+        OutputDebugStringA((char*)error->GetBufferPointer());
+        assert(0);
+    }
 
-#if 0
-    D3D12_STATE_SUBOBJECT stateObjects[7];
-    
-    D3D12_EXPORT_DESC entryDesc[3] = {};
-    entryDesc[0].Name = L"RayGen";
-    entryDesc[1].Name = L"ClosestHit";
-    entryDesc[2].Name = L"Miss";
+    // The State Object let's us define a bunch of things that DirectX needs to
+    // know about our shaders in order to use them.
 
-    D3D12_DXIL_LIBRARY_DESC dxilDesc = {};
-    dxilDesc.DXILLibrary.BytecodeLength = rayGenBytecode->GetBufferSize();
-    dxilDesc.DXILLibrary.pShaderBytecode = rayGenBytecode->GetBufferPointer();
-    // If we omit this it makes all the functions visible.
-    dxilDesc.NumExports = _countof(entryDesc);
-    dxilDesc.pExports = entryDesc;
-    
-
-    D3D12_HIT_GROUP_DESC hitGroupDesc = {};
-    hitGroupDesc.ClosestHitShaderImport = L"ClosestHit";
-    hitGroupDesc.HitGroupExport = L"HitGroup";
-    hitGroupDesc.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
-
-    D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfigDesc = {};
-    pipelineConfigDesc.MaxTraceRecursionDepth = 1;
-
-    D3D12_RAYTRACING_SHADER_CONFIG shaderConfigDesc = {};
-    shaderConfigDesc.MaxAttributeSizeInBytes = sizeof(DirectX::XMFLOAT4);
-    shaderConfigDesc.MaxPayloadSizeInBytes = D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
-
-    D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION payloadAssociationDesc = {};
-    const static wchar_t* payloadExports[] = { L"RayGen", L"HitGroup", L"Miss" };
-    payloadAssociationDesc.NumExports = _countof(payloadExports);
-    payloadAssociationDesc.pExports = payloadExports;
-    payloadAssociationDesc.pSubobjectToAssociate = &stateObjects[2];
-
-    D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION rootsigAssociationDesc = {};
-    const static wchar_t* rootsigExports[] = { L"RayGen", L"ClosestHit", L"Miss", L"HitGroup" };
-    rootsigAssociationDesc.NumExports = _countof(rootsigExports);
-    rootsigAssociationDesc.pExports = rootsigExports;
-    rootsigAssociationDesc.pSubobjectToAssociate = &stateObjects[4];
-    
-    // For now we wont use this
-    D3D12_LOCAL_ROOT_SIGNATURE localRootSig = {};
-    localRootSig.pLocalRootSignature = localRootSignature.Get();
-    // And only use this instead.
-    D3D12_GLOBAL_ROOT_SIGNATURE globalRootSig = {};
-    globalRootSig.pGlobalRootSignature = rootSignature.Get();
-
-    stateObjects[0].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
-    stateObjects[0].pDesc = &dxilDesc;
-    stateObjects[1].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
-    stateObjects[1].pDesc = &pipelineConfigDesc;
-    stateObjects[2].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
-    stateObjects[2].pDesc = &shaderConfigDesc;
-    stateObjects[3].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
-    stateObjects[3].pDesc = &hitGroupDesc;
-    stateObjects[4].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-    stateObjects[4].pDesc = &globalRootSig;
-    stateObjects[5].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
-    stateObjects[5].pDesc = &payloadAssociationDesc;
-    stateObjects[6].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
-    stateObjects[6].pDesc = &rootsigAssociationDesc;
-#endif
     CD3DX12_STATE_OBJECT_DESC stateObjectDesc(D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
-    //D3D12_STATE_OBJECT_DESC stateObjectDesc;
-    /*stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
-    stateObjectDesc.NumSubobjects = _countof(stateObjects);
-    stateObjectDesc.pSubobjects = stateObjects;*/
 
-    {
-    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
-    subobj->SetDXILLibrary(&CD3DX12_SHADER_BYTECODE(rayGenBytecode->GetBufferPointer(), rayGenBytecode->GetBufferSize()));
-    subobj->DefineExport(L"RayGen");
-    subobj->DefineExport(L"Miss");
-    subobj->DefineExport(L"ClosestHit");
-    }
-    {
-    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
-    subobj->SetHitGroupExport(L"HitGroup");
-    subobj->SetClosestHitShaderImport(L"ClosestHit");
-    subobj->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
-    }
-    {
-    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_SHADER_CONFIG_SUBOBJECT>();
-    subobj->Config(sizeof(DirectX::XMFLOAT4), sizeof(DirectX::XMFLOAT2));
-    }
-    {
-    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
-    subobj->SetRootSignature(localRootSignature.Get());
+    auto subobjDXIL = stateObjectDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+    subobjDXIL->SetDXILLibrary(&CD3DX12_SHADER_BYTECODE(rayGenBytecode->GetBufferPointer(), rayGenBytecode->GetBufferSize()));
+    subobjDXIL->DefineExport(L"RayGen");
+    subobjDXIL->DefineExport(L"Miss");
+    subobjDXIL->DefineExport(L"ClosestHit");
+
+    auto subobjHit = stateObjectDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
+    subobjHit->SetHitGroupExport(L"HitGroup");
+    subobjHit->SetClosestHitShaderImport(L"ClosestHit");
+    subobjHit->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
+    
+    auto subobjShaderConfig = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_SHADER_CONFIG_SUBOBJECT>();
+    subobjShaderConfig->Config(sizeof(DirectX::XMFLOAT4), sizeof(DirectX::XMFLOAT2));
+
+    auto subobjLocalSig = stateObjectDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
+    subobjLocalSig->SetRootSignature(localRootSignature.Get());
     auto assocSubobj = stateObjectDesc.CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
-    assocSubobj->SetSubobjectToAssociate(*subobj);
+    assocSubobj->SetSubobjectToAssociate(*subobjLocalSig);
     assocSubobj->AddExport(L"HitGroup");
-    }
-    {
-    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_GLOBAL_ROOT_SIGNATURE_SUBOBJECT>();
-    subobj->SetRootSignature(rootSignature.Get());
-    }
-    {
-    auto subobj = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT>();
-    subobj->Config(1);
-    }
+
+    auto subobjRootSig = stateObjectDesc.CreateSubobject<CD3DX12_GLOBAL_ROOT_SIGNATURE_SUBOBJECT>();
+    subobjRootSig->SetRootSignature(rootSignature.Get());
+    
+    auto subobjPipeline = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT>();
+    subobjPipeline->Config(1);
+
     assert(SUCCEEDED(device->CreateStateObject(stateObjectDesc, IID_PPV_ARGS(&rtPSO))));
     rtPSO->SetName(L"RayTracing PSO");
 }
@@ -546,7 +492,7 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
 
 void RefractionDemo::drawFrame()
 {
-    //uploadConstants();
+    uploadConstants();
 
     int frameIdx = swapchain->GetCurrentBackBufferIndex();
 
@@ -556,6 +502,7 @@ void RefractionDemo::drawFrame()
     commandList->SetComputeRootSignature(rootSignature.Get());
     commandList->SetComputeRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
     commandList->SetComputeRootShaderResourceView(1, tlasResult->GetGPUVirtualAddress());
+    commandList->SetComputeRootConstantBufferView(2, cameraConstantBuffer->GetGPUVirtualAddress());
 
     D3D12_DISPATCH_RAYS_DESC desc = {};
     desc.RayGenerationShaderRecord.StartAddress = raygenTable->GetGPUVirtualAddress();
