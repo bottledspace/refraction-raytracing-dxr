@@ -85,11 +85,6 @@ void RefractionDemo::createConstants()
     cbvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     device->CreateDescriptorHeap(&cbvDesc, IID_PPV_ARGS(&cbvHeap));
-
-    /*D3D12_CONSTANT_BUFFER_VIEW_DESC desc;
-    desc.BufferLocation = cameraConstantBuffer->GetGPUVirtualAddress();
-    desc.SizeInBytes = size;
-    device->CreateConstantBufferView(&desc, cbvHeap->GetCPUDescriptorHandleForHeapStart());*/
 }
 
 
@@ -245,8 +240,8 @@ void RefractionDemo::createPipelineState()
 void RefractionDemo::uploadConstants()
 {
     static float angle = 0.01f;
-    auto proj = DirectX::XMMatrixPerspectiveFovLH(3.14f/2.0, 640.0/480.0, 0.1f, 100.0f);
-    auto mv = DirectX::XMMatrixTranslation(0, 0, 10)*DirectX::XMMatrixRotationX(angle);
+    auto proj = DirectX::XMMatrixPerspectiveFovRH(3.14f/2.0, 640.0/480.0, 0.1f, 100.0f);
+    auto mv = DirectX::XMMatrixTranslation(0, 0, 10)*DirectX::XMMatrixRotationY(angle);
 
     const DirectX::XMMATRIX mvp(
         10, 0, 0, 0,
@@ -255,7 +250,7 @@ void RefractionDemo::uploadConstants()
         0, 0, -0.831807, 0.833472);
 
     DirectX::XMFLOAT4X4 mvp_inv;
-    DirectX::XMStoreFloat4x4(&mvp_inv, DirectX::XMMatrixInverse(nullptr, mv*proj));
+    DirectX::XMStoreFloat4x4(&mvp_inv, DirectX::XMMatrixInverse(nullptr, proj*mv));
     copyToBuffer(cameraConstantBuffer, &mvp_inv, sizeof(mvp_inv));
     angle += 0.01f;
 }
@@ -317,6 +312,9 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     instanceDesc.Transform[1][1] = 1.0f;
     instanceDesc.Transform[2][2] = 1.0f;
     instanceDesc.InstanceMask = 1;
+    instanceDesc.InstanceID = 0;
+    instanceDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE | D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+    instanceDesc.InstanceContributionToHitGroupIndex = 0;
     instanceDesc.AccelerationStructure = blasResult->GetGPUVirtualAddress();
     createUploadBuffer(instanceDescs, device, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
     copyToBuffer(instanceDescs, &instanceDesc, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
@@ -388,12 +386,15 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
 
     auto subobjDXIL = stateObjectDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
     subobjDXIL->SetDXILLibrary(&CD3DX12_SHADER_BYTECODE(rayGenBytecode->GetBufferPointer(), rayGenBytecode->GetBufferSize()));
-    subobjDXIL->DefineExport(L"RayGen");
+    // Can be omitted, simply adds them all by default.
+    /*subobjDXIL->DefineExport(L"RayGen");
     subobjDXIL->DefineExport(L"Miss");
     subobjDXIL->DefineExport(L"ClosestHit");
+    subobjDXIL->DefineExport(L"AnyHit");*/
 
     auto subobjHit = stateObjectDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
     subobjHit->SetHitGroupExport(L"HitGroup");
+    subobjHit->SetAnyHitShaderImport(L"AnyHit");
     subobjHit->SetClosestHitShaderImport(L"ClosestHit");
     subobjHit->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
     
@@ -476,7 +477,7 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
 
     createConstants();
     createSignatures();
-    cubeMesh.load("../cube.obj");
+    cubeMesh.load("../monkey.obj");
     cubeMesh.upload(device);
     setupRaytracingAccelerationStructures();
     setupRaytracingPipelineStateObjects();

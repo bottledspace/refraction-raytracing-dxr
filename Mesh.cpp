@@ -34,7 +34,7 @@ D3D12_RAYTRACING_GEOMETRY_DESC Mesh::raytracingGeometry() const
 {
     D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc;
     geometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    geometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    geometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION;
     geometryDesc.Triangles.VertexBuffer.StartAddress = vb->GetGPUVirtualAddress();
     geometryDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(Vertex);
     geometryDesc.Triangles.VertexCount = verts.size();

@@ -20,11 +20,10 @@ inline void GenerateCameraRay(uint2 index, out RayDesc ray)
 	screenPos.y = -screenPos.y;
 	
 	// Unproject the pixel coordinate into a ray.
-	float4 world = mul(float4(screenPos, 1, 1), sceneConstants.mvp);
+	float4 world = mul(float4(screenPos, 1, 0), sceneConstants.mvp);
 	float4 origin = mul(float4(0, 0, 0, 1), sceneConstants.mvp);
-	world.xyz /= world.w;
-	ray.Origin = world.xyz;
-	ray.Direction = normalize(world.xyz - origin.xyz/origin.w);
+	ray.Origin = origin.xyz;
+	ray.Direction = normalize(world.xyz - origin.xyz);
 }
 
 [shader("raygeneration")]
@@ -33,26 +32,34 @@ void RayGen()
 	RayDesc ray;
 	GenerateCameraRay(DispatchRaysIndex().xy, ray);
 	ray.TMin = 0.001;
-	ray.TMax = 10000.0;
+	ray.TMax = 100.0;
 
 	Payload payload;
-	payload.color = float4(1.0, 1.0, 0.0, 1.0);
+	payload.color = float4(1.0, 1.0, 1.0, 1.0);
 	
-	TraceRay(Scene, RAY_FLAG_NONE, ~0, 0, 1, 0, ray, payload);
+	TraceRay(Scene, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xff, 0, 0, 0, ray, payload);
 
 	RenderTarget[DispatchRaysIndex().xy] = payload.color;
 }
 
-[shader("closesthit")]
-void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attrs)
+[shader("anyhit")]
+void AnyHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
-	float4 background = float4(1.0f, 0.0f, 0.4f, 1.0f);
-	payload.color = background;
+	payload.color *= 0.5;
+
+	IgnoreHit();
+}
+
+[shader("closesthit")]
+void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
+{
+	//float4 background = float4(1.0f, 0.0f, 0.4f, 1.0f);
+	//payload.color = background;
 }
 
 [shader("miss")]
 void Miss(inout Payload payload)
 {
-	float4 background = float4(0.2f, 0.3f, 0.8f, 1.0f);
-	payload.color = background;
+	//float4 background = float4(0.2f, 0.3f, 0.8f, 1.0f);
+	//payload.color = background;
 }
