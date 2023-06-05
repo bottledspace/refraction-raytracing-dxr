@@ -40,7 +40,7 @@ D3D12_RAYTRACING_GEOMETRY_DESC Mesh::raytracingGeometry() const
     geometryDesc.Triangles.VertexCount = verts.size();
     geometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
     geometryDesc.Triangles.IndexBuffer = ib->GetGPUVirtualAddress();
-    geometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
+    geometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
     geometryDesc.Triangles.IndexCount = indices.size();
     geometryDesc.Triangles.Transform3x4 = 0;
     return geometryDesc;
@@ -78,7 +78,7 @@ void Mesh::upload(ComPtr<ID3D12Device5>& device)
     memcpy(pVertexDataBegin, verts.data(), resourceDesc.Width);
     vb->Unmap(0, nullptr);
 
-    resourceDesc.Width = indices.size() * sizeof(uint16_t);
+    resourceDesc.Width = indices.size() * sizeof(uint32_t);
     device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&ib));
 
@@ -93,8 +93,8 @@ void Mesh::draw(ComPtr<ID3D12Device5>& device, ComPtr<ID3D12GraphicsCommandList5
 
     D3D12_INDEX_BUFFER_VIEW indexView;
     indexView.BufferLocation = ib->GetGPUVirtualAddress();
-    indexView.Format = DXGI_FORMAT_R16_UINT;
-    indexView.SizeInBytes = indices.size() * sizeof(uint16_t);
+    indexView.Format = DXGI_FORMAT_R32_UINT;
+    indexView.SizeInBytes = indices.size() * sizeof(uint32_t);
     cmd->IASetIndexBuffer(&indexView);
 
     D3D12_VERTEX_BUFFER_VIEW vertexView;

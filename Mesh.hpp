@@ -15,8 +15,7 @@ struct Mesh
     void upload(ComPtr<ID3D12Device5>& device);
     void draw(ComPtr<ID3D12Device5>& device, ComPtr<ID3D12GraphicsCommandList5>& cmd);
 
-private:
-    std::vector<uint16_t> indices;
+    std::vector<uint32_t> indices;
     std::vector<Vertex> verts;
     ComPtr<ID3D12Resource> vb;
     ComPtr<ID3D12Resource> ib;

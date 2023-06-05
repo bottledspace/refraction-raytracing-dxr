@@ -22,6 +22,7 @@ private:
     void createRaytracingTexture();
     void createShaderTables();
     void waitForCommandsToFinish();
+    void createDescriptorHeap();
 
     Mesh cubeMesh;
 
@@ -35,7 +36,7 @@ private:
 
     ComPtr<ID3D12DescriptorHeap> rtvHeap;
     ComPtr<ID3D12DescriptorHeap> dsvHeap;
-    ComPtr<ID3D12DescriptorHeap> cbvHeap;
+    ComPtr<ID3D12DescriptorHeap> srvHeap;
 
     ComPtr<ID3D12Fence> fence;
     HANDLE fenceEvent;

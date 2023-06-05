@@ -79,12 +79,7 @@ void RefractionDemo::createConstants()
     unsigned size = (sizeof(DirectX::XMFLOAT4X4) + 255u) & ~255u;
     createUploadBuffer(cameraConstantBuffer, device, size);
 
-    D3D12_DESCRIPTOR_HEAP_DESC cbvDesc;
-    cbvDesc.NodeMask = 0;
-    cbvDesc.NumDescriptors = 2;
-    cbvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    cbvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    device->CreateDescriptorHeap(&cbvDesc, IID_PPV_ARGS(&cbvHeap));
+
 }
 
 
@@ -166,12 +161,11 @@ void RefractionDemo::createSignatures()
 
     // Main root signature
     {
-    CD3DX12_DESCRIPTOR_RANGE1 descRange;
-    descRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0); // RenderTarget
-    CD3DX12_ROOT_PARAMETER1 rp[3];
-    rp[0].InitAsDescriptorTable(1, &descRange);
+    CD3DX12_ROOT_PARAMETER1 rp[4];
+    rp[0].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE1(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0));
     rp[1].InitAsShaderResourceView(0);
     rp[2].InitAsConstantBufferView(0);
+    rp[3].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE1(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1));
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
     rootSigDesc.Init_1_1(_countof(rp), rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -313,7 +307,7 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     instanceDesc.Transform[2][2] = 1.0f;
     instanceDesc.InstanceMask = 1;
     instanceDesc.InstanceID = 0;
-    instanceDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE | D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+    instanceDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
     instanceDesc.InstanceContributionToHitGroupIndex = 0;
     instanceDesc.AccelerationStructure = blasResult->GetGPUVirtualAddress();
     createUploadBuffer(instanceDescs, device, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
@@ -394,7 +388,7 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
 
     auto subobjHit = stateObjectDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
     subobjHit->SetHitGroupExport(L"HitGroup");
-    subobjHit->SetAnyHitShaderImport(L"AnyHit");
+    //subobjHit->SetAnyHitShaderImport(L"AnyHit");
     subobjHit->SetClosestHitShaderImport(L"ClosestHit");
     subobjHit->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
     
@@ -422,10 +416,6 @@ void RefractionDemo::createRaytracingTexture()
     device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
         &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 640, 480, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&rtTexture));
-    
-    D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
-    desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    device->CreateUnorderedAccessView(rtTexture.Get(), nullptr, &desc, cbvHeap->GetCPUDescriptorHandleForHeapStart());
     rtTexture->SetName(L"RayTracing Texture");
 }
 
@@ -467,6 +457,42 @@ void RefractionDemo::waitForCommandsToFinish()
     WaitForSingleObject(fenceEvent, INFINITE);
 }
 
+void RefractionDemo::createDescriptorHeap()
+{
+    D3D12_DESCRIPTOR_HEAP_DESC srvDesc;
+    srvDesc.NodeMask = 0;
+    srvDesc.NumDescriptors = 3;
+    srvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    device->CreateDescriptorHeap(&srvDesc, IID_PPV_ARGS(&srvHeap));
+
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+        desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        device->CreateUnorderedAccessView(rtTexture.Get(), nullptr, &desc, srvHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        desc.Buffer.NumElements = cubeMesh.indices.size();
+        desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        desc.Buffer.StructureByteStride = sizeof(uint32_t);
+        device->CreateShaderResourceView(cubeMesh.ib.Get(), &desc, { srvHeap->GetCPUDescriptorHandleForHeapStart().ptr + cbvDescriptorSize });
+    }
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        desc.Buffer.NumElements = cubeMesh.verts.size();
+        desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        desc.Buffer.StructureByteStride = sizeof(Vertex);
+        device->CreateShaderResourceView(cubeMesh.vb.Get(), &desc, { srvHeap->GetCPUDescriptorHandleForHeapStart().ptr + 2*cbvDescriptorSize });
+    }
+}
+
 void RefractionDemo::initialize(HWND hWnd, int width, int height)
 {
     createDevice();
@@ -479,11 +505,14 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
     createSignatures();
     cubeMesh.load("../monkey.obj");
     cubeMesh.upload(device);
+
+    
     setupRaytracingAccelerationStructures();
     setupRaytracingPipelineStateObjects();
     createRaytracingTexture();
     createShaderTables();
     recreateSwapchain(hWnd, 640, 480);
+    createDescriptorHeap();
 
     commandList->Close();
     ID3D12CommandList* const commandLists[] = { commandList.Get() };
@@ -499,11 +528,12 @@ void RefractionDemo::drawFrame()
 
     commandAllocator->Reset();
     commandList->Reset(commandAllocator.Get(), nullptr);
-    commandList->SetDescriptorHeaps(1, cbvHeap.GetAddressOf());
+    commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf());
     commandList->SetComputeRootSignature(rootSignature.Get());
-    commandList->SetComputeRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    commandList->SetComputeRootDescriptorTable(0, srvHeap->GetGPUDescriptorHandleForHeapStart());
     commandList->SetComputeRootShaderResourceView(1, tlasResult->GetGPUVirtualAddress());
     commandList->SetComputeRootConstantBufferView(2, cameraConstantBuffer->GetGPUVirtualAddress());
+    commandList->SetComputeRootDescriptorTable(3, {srvHeap->GetGPUDescriptorHandleForHeapStart().ptr+cbvDescriptorSize});
 
     D3D12_DISPATCH_RAYS_DESC desc = {};
     desc.RayGenerationShaderRecord.StartAddress = raygenTable->GetGPUVirtualAddress();

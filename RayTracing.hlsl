@@ -1,10 +1,16 @@
 struct SceneConstants {
 	float4x4 mvp;
 };
+struct Vertex {
+	float3 position;
+	float2 uv;
+};
 
 ConstantBuffer<SceneConstants> sceneConstants : register(b0);
 RWTexture2D<float4> RenderTarget : register(u0);
 RaytracingAccelerationStructure Scene : register(t0);
+StructuredBuffer<uint> Indices : register(t1, space0);
+StructuredBuffer<Vertex> Vertices : register(t2, space0);
 
 struct Payload {
 	float4 color;
@@ -37,29 +43,35 @@ void RayGen()
 	Payload payload;
 	payload.color = float4(1.0, 1.0, 1.0, 1.0);
 	
-	TraceRay(Scene, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xff, 0, 0, 0, ray, payload);
+	TraceRay(Scene, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, ray, payload);
 
 	RenderTarget[DispatchRaysIndex().xy] = payload.color;
 }
 
-[shader("anyhit")]
+/*[shader("anyhit")]
 void AnyHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
 	payload.color *= 0.5;
 
+	//TraceRay(Scene, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, ray, payload);
+
 	IgnoreHit();
-}
+}*/
 
 [shader("closesthit")]
 void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
-	//float4 background = float4(1.0f, 0.0f, 0.4f, 1.0f);
-	//payload.color = background;
+	float4 background = float4(1.0f, 0.0f, 0.4f, 1.0f);
+
+	float3 inter = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+	payload.color = float4(inter.x,inter.y,inter.z,1.0);
+	float3 A = Vertices[Indices[PrimitiveIndex() * 3 + 0]].position;
+	float3 B = Vertices[Indices[PrimitiveIndex() * 3 + 1]].position;
+	float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].position;
+	payload.color.xyz = (A+B+C)/3.0f;
 }
 
 [shader("miss")]
 void Miss(inout Payload payload)
 {
-	//float4 background = float4(0.2f, 0.3f, 0.8f, 1.0f);
-	//payload.color = background;
 }
