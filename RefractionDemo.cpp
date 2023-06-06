@@ -405,7 +405,7 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     subobjRootSig->SetRootSignature(rootSignature.Get());
     
     auto subobjPipeline = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT>();
-    subobjPipeline->Config(6);
+    subobjPipeline->Config(31);
 
     assert(SUCCEEDED(device->CreateStateObject(stateObjectDesc, IID_PPV_ARGS(&rtPSO))));
     rtPSO->SetName(L"RayTracing PSO");

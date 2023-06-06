@@ -14,7 +14,8 @@ StructuredBuffer<uint> Indices : register(t1, space0);
 StructuredBuffer<Vertex> Vertices : register(t2, space0);
 
 struct Payload {
-	float4 color;
+	float3 color;
+	float3 mask;
 	uint count;
 };
 
@@ -43,7 +44,8 @@ void RayGen()
 	ray.TMax = 100.0;
 
 	Payload payload;
-	payload.color = float4(0.0,0.0,0.0,0.0);
+	payload.color = float3(0.0,0.0,0.0);
+	payload.mask = float3(1.0,1.0,1.0);
 	payload.count = 0;
 	TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payload);
 
@@ -72,7 +74,9 @@ float3 RefractRay(float3 I, float3 N, float mu) {
 [shader("closesthit")]
 void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
-	if (payload.count < 4) {
+	if (payload.count < 2) {
+		payload.count++;
+
 		float3 A = Vertices[Indices[PrimitiveIndex() * 3 + 0]].norm;
 		float3 B = Vertices[Indices[PrimitiveIndex() * 3 + 1]].norm;
 		float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].norm;
@@ -84,14 +88,26 @@ void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes att
 		ray.TMin = 0.001;
 		ray.TMax = 100.0;
 
-		payload.count++;
-		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payload);
+		Payload payloadRed;
+		payloadRed.mask = float3(1.0, 0.0, 0.0);
+		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadRed);
+
+		ray.Origin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+		ray.Direction = normalize(RefractRay(WorldRayDirection(), N, 1.2));
+		ray.TMin = 0.001;
+		ray.TMax = 100.0;
+
+		Payload payloadCyan;
+		payloadCyan.mask = float3(0.0,1.0,1.0);
+		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadCyan);
+
+		payload.color = payloadRed.color + payloadCyan.color;
 	}
-	//payload.color.xyz *= 0.75;
+	payload.color *= 0.9;
 }
 
 [shader("miss")]
 void Miss(inout Payload payload)
 {
-	payload.color.xyz = (WorldRayDirection().x*WorldRayDirection().y* WorldRayDirection().z >0)? 1.0 : 0.0;
+	payload.color = payload.mask * ((WorldRayDirection().x*WorldRayDirection().y* WorldRayDirection().z >0)? 1.0 : 0.0);
 }
