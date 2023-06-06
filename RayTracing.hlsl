@@ -3,6 +3,7 @@ struct SceneConstants {
 };
 struct Vertex {
 	float3 position;
+	float3 norm;
 	float2 uv;
 };
 
@@ -14,6 +15,7 @@ StructuredBuffer<Vertex> Vertices : register(t2, space0);
 
 struct Payload {
 	float4 color;
+	uint count;
 };
 
 // Generate a ray in world space for a camera pixel corresponding to an index from the dispatched 2D grid.
@@ -41,11 +43,11 @@ void RayGen()
 	ray.TMax = 100.0;
 
 	Payload payload;
-	payload.color = float4(1.0, 1.0, 1.0, 1.0);
-	
-	TraceRay(Scene, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, ray, payload);
+	payload.color = float4(0.0,0.0,0.0,0.0);
+	payload.count = 0;
+	TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payload);
 
-	RenderTarget[DispatchRaysIndex().xy] = payload.color;
+	RenderTarget[DispatchRaysIndex().xy] = float4(payload.color.xyz,1.0);
 }
 
 /*[shader("anyhit")]
@@ -58,20 +60,38 @@ void AnyHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 	IgnoreHit();
 }*/
 
+float3 ReflectRay(float3 R, float3 N) {
+	return 2 * N * dot(N, R) - R;
+}
+
+float3 RefractRay(float3 I, float3 N, float mu) {
+	float dotNI = dot(N,I);
+	return sqrt(1-mu*mu*(1-dotNI*dotNI))*N + mu*(I- dotNI *N);
+}
+
 [shader("closesthit")]
 void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
-	float4 background = float4(1.0f, 0.0f, 0.4f, 1.0f);
+	if (payload.count < 4) {
+		float3 A = Vertices[Indices[PrimitiveIndex() * 3 + 0]].norm;
+		float3 B = Vertices[Indices[PrimitiveIndex() * 3 + 1]].norm;
+		float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].norm;
+		float3 N = normalize(A + attrs.barycentrics.x*(B-A) + attrs.barycentrics.y*(C-A));
 
-	float3 inter = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-	payload.color = float4(inter.x,inter.y,inter.z,1.0);
-	float3 A = Vertices[Indices[PrimitiveIndex() * 3 + 0]].position;
-	float3 B = Vertices[Indices[PrimitiveIndex() * 3 + 1]].position;
-	float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].position;
-	payload.color.xyz = (A+B+C)/3.0f;
+		RayDesc ray;
+		ray.Origin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+		ray.Direction = normalize(RefractRay(WorldRayDirection(), N, 1.33));
+		ray.TMin = 0.001;
+		ray.TMax = 100.0;
+
+		payload.count++;
+		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payload);
+	}
+	//payload.color.xyz *= 0.75;
 }
 
 [shader("miss")]
 void Miss(inout Payload payload)
 {
+	payload.color.xyz = (WorldRayDirection().x*WorldRayDirection().y* WorldRayDirection().z >0)? 1.0 : 0.0;
 }

@@ -2,11 +2,14 @@
 
 #include "stdafx.h"
 
+#pragma push(pack, 1)
 struct Vertex
 {
     float position[3];
+    float norm[3];
     float uv[2];
 };
+#pragma pop(pack)
 
 struct Mesh
 {

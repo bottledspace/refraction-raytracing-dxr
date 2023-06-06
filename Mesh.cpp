@@ -9,19 +9,25 @@ bool Mesh::load(const char* filename)
     if (!is.is_open())
         return false;
 
-    std::vector<float> locs, uvs;
+    std::vector<float> locs, uvs, norms;
     std::string line;
     while (std::getline(is, line)) {
         if (float x, y, z; sscanf(line.c_str(), "v %f %f %f", &x, &y, &z) == 3)
             locs.insert(locs.end(), { x,y,z });
         else if (float u, v; sscanf(line.c_str(), "vt %f %f", &u, &v) == 2)
             uvs.insert(uvs.end(), { u,v });
-        else if (int a[3], b[3]; sscanf(line.c_str(), "f %d/%d %d/%d %d/%d", &a[0], &b[0], &a[1], &b[1], &a[2], &b[2]) == 6) {
-            float xyz[3], uv[2];
+        else if (float x, y, z; sscanf(line.c_str(), "vn %f %f %f", &x, &y, &z) == 3)
+            norms.insert(norms.end(), { x,y,z });
+        else if (int a[3], b[3], c[3];
+                sscanf(line.c_str(), "f %d/%d/%d %d/%d/%d %d/%d/%d",
+                    &a[0], &b[0], &c[0],
+                    &a[1], &b[1], &c[1],
+                    &a[2], &b[2], &c[2]) == 9) {
             for (int i = 0; i < 3; i++) {
-                Vertex vertex;
+                Vertex vertex = {};
                 memcpy(vertex.position, &locs[3 * (a[i] - 1)], sizeof(float) * 3);
                 memcpy(vertex.uv, &uvs[2 * (b[i] - 1)], sizeof(float) * 2);
+                memcpy(vertex.norm, &norms[3 * (c[i] - 1)], sizeof(float) * 3);
                 indices.push_back(verts.size());
                 verts.push_back(vertex);
             }

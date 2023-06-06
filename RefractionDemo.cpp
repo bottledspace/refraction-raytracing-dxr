@@ -393,7 +393,7 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     subobjHit->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
     
     auto subobjShaderConfig = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_SHADER_CONFIG_SUBOBJECT>();
-    subobjShaderConfig->Config(sizeof(DirectX::XMFLOAT4), sizeof(DirectX::XMFLOAT2));
+    subobjShaderConfig->Config(sizeof(DirectX::XMFLOAT4)*2, sizeof(DirectX::XMFLOAT2));
 
     auto subobjLocalSig = stateObjectDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
     subobjLocalSig->SetRootSignature(localRootSignature.Get());
@@ -405,7 +405,7 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     subobjRootSig->SetRootSignature(rootSignature.Get());
     
     auto subobjPipeline = stateObjectDesc.CreateSubobject<CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT>();
-    subobjPipeline->Config(1);
+    subobjPipeline->Config(6);
 
     assert(SUCCEEDED(device->CreateStateObject(stateObjectDesc, IID_PPV_ARGS(&rtPSO))));
     rtPSO->SetName(L"RayTracing PSO");
