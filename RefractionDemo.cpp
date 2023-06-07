@@ -78,8 +78,6 @@ void RefractionDemo::createConstants()
 {
     unsigned size = (sizeof(DirectX::XMFLOAT4X4) + 255u) & ~255u;
     createUploadBuffer(cameraConstantBuffer, device, size);
-
-
 }
 
 

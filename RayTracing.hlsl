@@ -82,26 +82,34 @@ void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes att
 		float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].norm;
 		float3 N = normalize(A + attrs.barycentrics.x*(B-A) + attrs.barycentrics.y*(C-A));
 
+		Payload payloadRed = payload;
+		Payload payloadCyan = payload;
+		Payload payloadRefl = payload;
+
 		RayDesc ray;
 		ray.Origin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+		ray.TMin = 0.001;
+		ray.TMax = 100.0;
+		
 		ray.Direction = normalize(RefractRay(WorldRayDirection(), N, 1.33));
-		ray.TMin = 0.001;
-		ray.TMax = 100.0;
-
-		Payload payloadRed;
-		payloadRed.mask = float3(1.0, 0.0, 0.0);
+		
+		payloadRed.mask = payload.mask * float3(1.0,0.0,0.0);
 		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadRed);
+		payload.color += payloadRed.color;
 
-		ray.Origin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 		ray.Direction = normalize(RefractRay(WorldRayDirection(), N, 1.2));
-		ray.TMin = 0.001;
-		ray.TMax = 100.0;
-
-		Payload payloadCyan;
-		payloadCyan.mask = float3(0.0,1.0,1.0);
+		
+		payloadCyan.mask = payload.mask*float3(0.0,1.0,1.0);
 		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadCyan);
+		payload.color += payloadCyan.color;
+	
+		ray.Direction = normalize(ReflectRay(WorldRayDirection(), N));
 
-		payload.color = payloadRed.color + payloadCyan.color;
+		float fresnel = pow(abs(dot(mul(float4(N, 0), sceneConstants.mvp), WorldRayDirection())), 2);
+
+		payloadRefl.mask = fresnel;
+		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadRefl);
+		payload.color += payloadRefl.color;
 	}
 	payload.color *= 0.9;
 }
