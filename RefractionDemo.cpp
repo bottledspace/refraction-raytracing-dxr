@@ -1,4 +1,6 @@
 #include "RefractionDemo.hpp"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include <sstream>
 #include <fstream>
 #include <vector>
@@ -76,7 +78,7 @@ void RefractionDemo::createDevice()
 
 void RefractionDemo::createConstants()
 {
-    unsigned size = (sizeof(DirectX::XMFLOAT4X4) + 255u) & ~255u;
+    unsigned size = (sizeof(sceneConstants) + 255u) & ~255u;
     createUploadBuffer(cameraConstantBuffer, device, size);
 }
 
@@ -163,9 +165,9 @@ void RefractionDemo::createSignatures()
     rp[0].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE1(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0));
     rp[1].InitAsShaderResourceView(0);
     rp[2].InitAsConstantBufferView(0);
-    rp[3].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE1(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1));
+    rp[3].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE1(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 1));
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
-    rootSigDesc.Init_1_1(_countof(rp), rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    rootSigDesc.Init_1_1(_countof(rp), rp, 1, &CD3DX12_STATIC_SAMPLER_DESC(0), D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> blob;
     D3D12SerializeVersionedRootSignature(&rootSigDesc, &blob, nullptr);
@@ -232,18 +234,16 @@ void RefractionDemo::createPipelineState()
 void RefractionDemo::uploadConstants()
 {
     static float angle = 0.01f;
-    auto proj = DirectX::XMMatrixPerspectiveFovRH(3.14f/2.0, 640.0/480.0, 0.1f, 100.0f);
-    auto mv = DirectX::XMMatrixTranslation(0, 0, 10)*DirectX::XMMatrixRotationY(angle);
+    DirectX::XMMATRIX proj = DirectX::XMMatrixPerspectiveFovLH(52.0f/180.0*3.1415, 1.333, 1.0f, 125.0f);
+    sceneConstants.camera_loc = { 3*cosf(angle),0,3*sinf(angle),1.0 };
+    DirectX::XMMATRIX world = DirectX::XMMatrixTranslationFromVector(sceneConstants.camera_loc);
+    DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH({cosf(-angle),0.0,sinf(-angle),1.0}, {0.0,0.0,0.0,1.0},{0.0,1.0,0.0,0.0});
+    //mvp *= DirectX::XMMatrixRotationY(angle);
+    DirectX::XMMATRIX projView = proj*world*view;
 
-    const DirectX::XMMATRIX mvp(
-        10, 0, 0, 0,
-        0, -10, 0, 0,
-        0, 0, -0.831807, -0.166528,
-        0, 0, -0.831807, 0.833472);
+    sceneConstants.proj_inv = DirectX::XMMatrixInverse(nullptr, projView);
+    copyToBuffer(cameraConstantBuffer, &sceneConstants, sizeof(sceneConstants));
 
-    DirectX::XMFLOAT4X4 mvp_inv;
-    DirectX::XMStoreFloat4x4(&mvp_inv, DirectX::XMMatrixInverse(nullptr, proj*mv));
-    copyToBuffer(cameraConstantBuffer, &mvp_inv, sizeof(mvp_inv));
     angle += 0.01f;
 }
 
@@ -305,7 +305,7 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     instanceDesc.Transform[2][2] = 1.0f;
     instanceDesc.InstanceMask = 1;
     instanceDesc.InstanceID = 0;
-    instanceDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+    instanceDesc.Flags = 0;
     instanceDesc.InstanceContributionToHitGroupIndex = 0;
     instanceDesc.AccelerationStructure = blasResult->GetGPUVirtualAddress();
     createUploadBuffer(instanceDescs, device, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
@@ -409,12 +409,45 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     rtPSO->SetName(L"RayTracing PSO");
 }
 
+ComPtr<ID3D12Resource> uploadBuffer;
+
 void RefractionDemo::createRaytracingTexture()
 {
     device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
         &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 640, 480, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&rtTexture));
     rtTexture->SetName(L"RayTracing Texture");
+
+    device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
+        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 640, 480),
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&envMap));
+    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(envMap.Get(), 0, 1);
+
+    
+    //std::vector<uint8_t> pixels(640 * 480 * 4);
+    createUploadBuffer(uploadBuffer, device, uploadBufferSize);
+    int x,y,n;
+    unsigned char *data = stbi_load("../envmap.png", &x, &y, &n, 0);
+    /*for (int j = 0; j < 480; j++)
+    for (int i = 0; i < 640; i++) {
+        pixels[(j*640+i)*4]   = ((i+j)%2)*255;
+        pixels[(j*640+i)*4+1] = ((i+j)%2)*255;
+        pixels[(j*640+i)*4+2] = ((i+j)%2)*255;
+        pixels[(j*640+i)*4+3] = 255;
+    }*/
+    assert(x == 640 && y == 480 && n == 4);
+    copyToBuffer(uploadBuffer, data, x*y*n);
+
+    D3D12_SUBRESOURCE_DATA textureData = {};
+    textureData.pData = data;
+    textureData.RowPitch = 640*4;
+    textureData.SlicePitch = textureData.RowPitch * 480;
+    UpdateSubresources(commandList.Get(), envMap.Get(), uploadBuffer.Get(), 0, 0, 1, &textureData);
+    commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(envMap.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE));
+
+    stbi_image_free(data);
+
+    envMap->SetName(L"Environment Map Texture");
 }
 
 void RefractionDemo::createShaderTables()
@@ -459,7 +492,7 @@ void RefractionDemo::createDescriptorHeap()
 {
     D3D12_DESCRIPTOR_HEAP_DESC srvDesc;
     srvDesc.NodeMask = 0;
-    srvDesc.NumDescriptors = 3;
+    srvDesc.NumDescriptors = 4;
     srvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     device->CreateDescriptorHeap(&srvDesc, IID_PPV_ARGS(&srvHeap));
@@ -489,6 +522,17 @@ void RefractionDemo::createDescriptorHeap()
         desc.Buffer.StructureByteStride = sizeof(Vertex);
         device->CreateShaderResourceView(cubeMesh.vb.Get(), &desc, { srvHeap->GetCPUDescriptorHandleForHeapStart().ptr + 2*cbvDescriptorSize });
     }
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        desc.Texture2D.MipLevels = 1;
+        desc.Texture2D.MostDetailedMip = 0;
+        desc.Texture2D.PlaneSlice = 0;
+        desc.Texture2D.ResourceMinLODClamp = 0.0f;
+        device->CreateShaderResourceView(envMap.Get(), &desc, { srvHeap->GetCPUDescriptorHandleForHeapStart().ptr + 3*cbvDescriptorSize });
+    }
 }
 
 void RefractionDemo::initialize(HWND hWnd, int width, int height)
@@ -501,7 +545,7 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
 
     createConstants();
     createSignatures();
-    cubeMesh.load("../monkey.obj");
+    cubeMesh.load("../ott.obj");
     cubeMesh.upload(device);
 
     

@@ -24,6 +24,11 @@ private:
     void waitForCommandsToFinish();
     void createDescriptorHeap();
 
+    struct {
+        DirectX::XMMATRIX proj_inv;
+        DirectX::XMVECTOR camera_loc;
+    } sceneConstants;
+
     Mesh cubeMesh;
 
     ComPtr<IDXGIFactory2> factory;
@@ -66,6 +71,7 @@ private:
     ComPtr<ID3D12Resource> raygenTable;
     ComPtr<ID3D12Resource> hitTable;
     ComPtr<ID3D12Resource> missTable;
+    ComPtr<ID3D12Resource> envMap;
 
     ComPtr<ID3D12DescriptorHeap> descriptorHeap;
 };

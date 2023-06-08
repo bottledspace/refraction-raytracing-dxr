@@ -1,5 +1,6 @@
 struct SceneConstants {
-	float4x4 mvp;
+	float4x4 proj_inv;
+	float4 camera_loc;
 };
 struct Vertex {
 	float3 position;
@@ -12,6 +13,8 @@ RWTexture2D<float4> RenderTarget : register(u0);
 RaytracingAccelerationStructure Scene : register(t0);
 StructuredBuffer<uint> Indices : register(t1, space0);
 StructuredBuffer<Vertex> Vertices : register(t2, space0);
+Texture2D<float4> EnvironmentMap : register(t3);
+SamplerState Sampler : register(s0);
 
 struct Payload {
 	float3 color;
@@ -20,7 +23,7 @@ struct Payload {
 };
 
 // Generate a ray in world space for a camera pixel corresponding to an index from the dispatched 2D grid.
-inline void GenerateCameraRay(uint2 index, out RayDesc ray)
+inline void GenerateCameraRay(uint2 index, out float3 dir, out float3 origin)
 {
 	float2 xy = index + 0.5f; // center in the middle of the pixel.
 	float2 screenPos = xy / DispatchRaysDimensions().xy * 2.0 - 1.0;
@@ -28,18 +31,23 @@ inline void GenerateCameraRay(uint2 index, out RayDesc ray)
 	// Invert Y for DirectX-style coordinates.
 	screenPos.y = -screenPos.y;
 	
+	float4 R = mul(float4(screenPos, 0, 1), sceneConstants.proj_inv);
+
 	// Unproject the pixel coordinate into a ray.
-	float4 world = mul(float4(screenPos, 1, 0), sceneConstants.mvp);
-	float4 origin = mul(float4(0, 0, 0, 1), sceneConstants.mvp);
-	ray.Origin = origin.xyz;
-	ray.Direction = normalize(world.xyz - origin.xyz);
+	origin = sceneConstants.camera_loc.xyz;
+	dir = normalize(R.xyz);
 }
 
 [shader("raygeneration")]
 void RayGen()
 {
+	float3 origin,dir;
+
+	GenerateCameraRay(DispatchRaysIndex().xy, dir, origin);
+
 	RayDesc ray;
-	GenerateCameraRay(DispatchRaysIndex().xy, ray);
+	ray.Origin = origin;
+	ray.Direction = dir;
 	ray.TMin = 0.001;
 	ray.TMax = 100.0;
 
@@ -47,7 +55,7 @@ void RayGen()
 	payload.color = float3(0.0,0.0,0.0);
 	payload.mask = float3(1.0,1.0,1.0);
 	payload.count = 0;
-	TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payload);
+	TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xff, 0, 0, 0, ray, payload);
 
 	RenderTarget[DispatchRaysIndex().xy] = float4(payload.color.xyz,1.0);
 }
@@ -66,15 +74,21 @@ float3 ReflectRay(float3 R, float3 N) {
 	return 2 * N * dot(N, R) - R;
 }
 
-float3 RefractRay(float3 I, float3 N, float mu) {
-	float dotNI = dot(N,I);
-	return sqrt(1-mu*mu*(1-dotNI*dotNI))*N + mu*(I- dotNI *N);
+bool RefractRay(out float3 R, float3 I, float3 N, float eta) {
+	float k = 1.0 - eta * eta * (1.0 - dot(N, I) * dot(N, I));
+	if (k < 0.0)
+		return false;
+	R = normalize(eta * I - (eta * dot(N, I) + sqrt(k)) * N);
+	return true;
 }
+
 
 [shader("closesthit")]
 void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
-	if (payload.count < 2) {
+	if (payload.count < 4) {
+		uint flags = (RayFlags() & RAY_FLAG_CULL_BACK_FACING_TRIANGLES)
+			? RAY_FLAG_CULL_FRONT_FACING_TRIANGLES : RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
 		payload.count++;
 
 		float3 A = Vertices[Indices[PrimitiveIndex() * 3 + 0]].norm;
@@ -82,40 +96,59 @@ void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes att
 		float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].norm;
 		float3 N = normalize(A + attrs.barycentrics.x*(B-A) + attrs.barycentrics.y*(C-A));
 
-		Payload payloadRed = payload;
-		Payload payloadCyan = payload;
-		Payload payloadRefl = payload;
-
-		RayDesc ray;
-		ray.Origin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-		ray.TMin = 0.001;
-		ray.TMax = 100.0;
+		float3 intersection = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 		
-		ray.Direction = normalize(RefractRay(WorldRayDirection(), N, 1.33));
+		float3 dir1;
+		if (RefractRay(dir1, WorldRayDirection(), N, (~flags & RAY_FLAG_CULL_BACK_FACING_TRIANGLES) ? 0.7143 : 1.4)) {
+			RayDesc ray;
+			ray.Origin = intersection;
+			ray.Direction = dir1;
+			ray.TMin = 0.001;
+			ray.TMax = 100.0;
+			Payload payload2;
+			payload2.count = payload.count;
+			payload2.mask = float3(1.0,0.0,0.0);
+			TraceRay(Scene, flags, 0xff, 0, 0, 0, ray, payload2);
+			payload.color += 0.4*payload2.color;
+		}
 		
-		payloadRed.mask = payload.mask * float3(1.0,0.0,0.0);
-		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadRed);
-		payload.color += payloadRed.color;
+		float3 dir2;
+		if (RefractRay(dir2, WorldRayDirection(), N, (~flags & RAY_FLAG_CULL_BACK_FACING_TRIANGLES) ? 0.709 : 1.41)) {
+			RayDesc ray;
+			ray.Origin = intersection;
+			ray.Direction = dir2;
+			ray.TMin = 0.001;
+			ray.TMax = 100.0;
+			Payload payload2;
+			payload2.count = payload.count;
+			payload2.mask = float3(0.0,1.0,1.0);
+			TraceRay(Scene, flags, 0xff, 0, 0, 0, ray, payload2);
+			payload.color += 0.45*payload2.color;
+		}
 
-		ray.Direction = normalize(RefractRay(WorldRayDirection(), N, 1.2));
-		
-		payloadCyan.mask = payload.mask*float3(0.0,1.0,1.0);
-		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadCyan);
-		payload.color += payloadCyan.color;
-	
-		ray.Direction = normalize(ReflectRay(WorldRayDirection(), N));
+		if (~flags & RAY_FLAG_CULL_BACK_FACING_TRIANGLES) {
+			RayDesc ray;
+			ray.Origin = intersection;
+			ray.Direction = normalize(ReflectRay(WorldRayDirection(), N));
+			ray.TMin = 0.001;
+			ray.TMax = 100.0;
 
-		float fresnel = pow(abs(dot(mul(float4(N, 0), sceneConstants.mvp), WorldRayDirection())), 2);
-
-		payloadRefl.mask = fresnel;
-		TraceRay(Scene, 0, 0xff, 0, 0, 0, ray, payloadRefl);
-		payload.color += payloadRefl.color;
+			float fresnel = 0.5*max(0, min(1, 0.2 + 2 * pow(1.0 + dot(N,WorldRayDirection()),10)));
+			Payload payload2;
+			payload2.count = payload.count;
+			payload2.mask = float3(1.0,1.0,1.0);
+			TraceRay(Scene, flags, 0xff, 0, 0, 0, ray, payload2);
+			payload.color = payload.color + fresnel*payload2.color;
+		}
 	}
-	payload.color *= 0.9;
 }
 
 [shader("miss")]
 void Miss(inout Payload payload)
 {
-	payload.color = payload.mask * ((WorldRayDirection().x*WorldRayDirection().y* WorldRayDirection().z >0)? 1.0 : 0.0);
+	float3 r = WorldRayDirection();
+	float theta = 640*(atan2(r.y,r.x) / 3.14159 + 1.0)/2;
+	float phi   = 480*(atan2(r.x,r.z) / 3.14159 + 1.0)/2;
+	payload.color = payload.mask * EnvironmentMap[int2(theta,phi)];
+	((WorldRayDirection().x*WorldRayDirection().y* WorldRayDirection().z >0)? 1.0 : 0.0);
 }
