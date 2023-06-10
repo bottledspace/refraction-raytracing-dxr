@@ -68,8 +68,6 @@ void RefractionDemo::createDevice()
     desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     device->CreateCommandQueue(&desc, IID_PPV_ARGS(&commandQueue));
 
-
-
     // Cache these GPU sizes.
     rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     dsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -130,7 +128,7 @@ void RefractionDemo::recreateSwapchain(HWND hwnd, int width, int height)
     device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
         D3D12_HEAP_FLAG_NONE,
-        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, 640, 480, 1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
         D3D12_RESOURCE_STATE_DEPTH_WRITE,
         &CD3DX12_CLEAR_VALUE(DXGI_FORMAT_D32_FLOAT, 1.0f, 0u),
         IID_PPV_ARGS(&depthStencilBuffer));
@@ -235,7 +233,7 @@ void RefractionDemo::uploadConstants()
 {
     static float angle = 0.01f;
     DirectX::XMMATRIX proj = DirectX::XMMatrixPerspectiveFovLH(52.0f/180.0*3.1415, 1.333, 1.0f, 125.0f);
-    sceneConstants.camera_loc = { 3*cosf(angle),0,3*sinf(angle),1.0 };
+    sceneConstants.camera_loc = { 5*cosf(angle),0,5*sinf(angle),1.0 };
     DirectX::XMMATRIX world = DirectX::XMMatrixTranslationFromVector(sceneConstants.camera_loc);
     DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH({cosf(-angle),0.0,sinf(-angle),1.0}, {0.0,0.0,0.0,1.0},{0.0,1.0,0.0,0.0});
     //mvp *= DirectX::XMMatrixRotationY(angle);
@@ -414,34 +412,28 @@ ComPtr<ID3D12Resource> uploadBuffer;
 void RefractionDemo::createRaytracingTexture()
 {
     device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
-        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 640, 480, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&rtTexture));
     rtTexture->SetName(L"RayTracing Texture");
 
+    int x, y, n;
+    float* data = stbi_loadf("../envmap.hdr", &x, &y, &n, 3);
+
     device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
-        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 640, 480),
+        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32_FLOAT, x, y),
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&envMap));
     const UINT64 uploadBufferSize = GetRequiredIntermediateSize(envMap.Get(), 0, 1);
 
     
     //std::vector<uint8_t> pixels(640 * 480 * 4);
     createUploadBuffer(uploadBuffer, device, uploadBufferSize);
-    int x,y,n;
-    unsigned char *data = stbi_load("../envmap.png", &x, &y, &n, 0);
-    /*for (int j = 0; j < 480; j++)
-    for (int i = 0; i < 640; i++) {
-        pixels[(j*640+i)*4]   = ((i+j)%2)*255;
-        pixels[(j*640+i)*4+1] = ((i+j)%2)*255;
-        pixels[(j*640+i)*4+2] = ((i+j)%2)*255;
-        pixels[(j*640+i)*4+3] = 255;
-    }*/
-    assert(x == 640 && y == 480 && n == 4);
+
     copyToBuffer(uploadBuffer, data, x*y*n);
 
     D3D12_SUBRESOURCE_DATA textureData = {};
     textureData.pData = data;
-    textureData.RowPitch = 640*4;
-    textureData.SlicePitch = textureData.RowPitch * 480;
+    textureData.RowPitch = x*3*sizeof(float);
+    textureData.SlicePitch = textureData.RowPitch * y;
     UpdateSubresources(commandList.Get(), envMap.Get(), uploadBuffer.Get(), 0, 0, 1, &textureData);
     commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(envMap.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE));
 
@@ -537,6 +529,9 @@ void RefractionDemo::createDescriptorHeap()
 
 void RefractionDemo::initialize(HWND hWnd, int width, int height)
 {
+    this->width = width;
+    this->height = height;
+
     createDevice();
 
     // We should be creating one of these per RTV, for now we just create one.
@@ -545,7 +540,7 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
 
     createConstants();
     createSignatures();
-    cubeMesh.load("../ott.obj");
+    cubeMesh.load("../shell.obj");
     cubeMesh.upload(device);
 
     
@@ -553,7 +548,7 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
     setupRaytracingPipelineStateObjects();
     createRaytracingTexture();
     createShaderTables();
-    recreateSwapchain(hWnd, 640, 480);
+    recreateSwapchain(hWnd, width, height);
     createDescriptorHeap();
 
     commandList->Close();
@@ -586,8 +581,8 @@ void RefractionDemo::drawFrame()
     desc.MissShaderTable.StartAddress = missTable->GetGPUVirtualAddress();
     desc.MissShaderTable.SizeInBytes = 64;
     desc.MissShaderTable.StrideInBytes = 64;
-    desc.Width = 640;
-    desc.Height = 480;
+    desc.Width = width;
+    desc.Height = height;
     desc.Depth = 1;
 
     commandList->SetPipelineState1(rtPSO.Get());

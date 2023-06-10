@@ -19,6 +19,7 @@ SamplerState Sampler : register(s0);
 struct Payload {
 	float3 color;
 	float3 mask;
+	bool outside;
 	uint count;
 };
 
@@ -48,30 +49,22 @@ void RayGen()
 	RayDesc ray;
 	ray.Origin = origin;
 	ray.Direction = dir;
-	ray.TMin = 0.001;
+	ray.TMin = 0.0001;
 	ray.TMax = 100.0;
 
 	Payload payload;
 	payload.color = float3(0.0,0.0,0.0);
 	payload.mask = float3(1.0,1.0,1.0);
+	payload.outside = true;
 	payload.count = 0;
 	TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xff, 0, 0, 0, ray, payload);
 
 	RenderTarget[DispatchRaysIndex().xy] = float4(payload.color.xyz,1.0);
+
 }
 
-/*[shader("anyhit")]
-void AnyHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
-{
-	payload.color *= 0.5;
-
-	//TraceRay(Scene, RAY_FLAG_FORCE_OPAQUE, 0xff, 0, 0, 0, ray, payload);
-
-	IgnoreHit();
-}*/
-
-float3 ReflectRay(float3 R, float3 N) {
-	return 2 * N * dot(N, R) - R;
+float3 ReflectRay(float3 I, float3 N) {
+	return I - 2.0 * dot(N, I) * N;
 }
 
 bool RefractRay(out float3 R, float3 I, float3 N, float eta) {
@@ -86,11 +79,7 @@ bool RefractRay(out float3 R, float3 I, float3 N, float eta) {
 [shader("closesthit")]
 void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes attrs)
 {
-	if (payload.count < 4) {
-		uint flags = (RayFlags() & RAY_FLAG_CULL_BACK_FACING_TRIANGLES)
-			? RAY_FLAG_CULL_FRONT_FACING_TRIANGLES : RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
-		payload.count++;
-
+	if (payload.count < 5) {
 		float3 A = Vertices[Indices[PrimitiveIndex() * 3 + 0]].norm;
 		float3 B = Vertices[Indices[PrimitiveIndex() * 3 + 1]].norm;
 		float3 C = Vertices[Indices[PrimitiveIndex() * 3 + 2]].norm;
@@ -99,46 +88,38 @@ void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes att
 		float3 intersection = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 		
 		float3 dir1;
-		if (RefractRay(dir1, WorldRayDirection(), N, (~flags & RAY_FLAG_CULL_BACK_FACING_TRIANGLES) ? 0.7143 : 1.4)) {
+
+		float R0 = (0.2 / 2.2) * (0.2 / 2.2);
+		float R = R0 * (1.0 - R0) * pow(1.0 - dot(WorldRayDirection(), payload.outside ? N : -N), 5);
+
+		if (RefractRay(dir1, WorldRayDirection(), payload.outside? N:-N, payload.outside ? (1.0/1.3) : 1.3)) {
 			RayDesc ray;
 			ray.Origin = intersection;
 			ray.Direction = dir1;
 			ray.TMin = 0.001;
-			ray.TMax = 100.0;
-			Payload payload2;
-			payload2.count = payload.count;
-			payload2.mask = float3(1.0,0.0,0.0);
-			TraceRay(Scene, flags, 0xff, 0, 0, 0, ray, payload2);
-			payload.color += 0.4*payload2.color;
-		}
-		
-		float3 dir2;
-		if (RefractRay(dir2, WorldRayDirection(), N, (~flags & RAY_FLAG_CULL_BACK_FACING_TRIANGLES) ? 0.709 : 1.41)) {
-			RayDesc ray;
-			ray.Origin = intersection;
-			ray.Direction = dir2;
-			ray.TMin = 0.001;
-			ray.TMax = 100.0;
-			Payload payload2;
-			payload2.count = payload.count;
-			payload2.mask = float3(0.0,1.0,1.0);
-			TraceRay(Scene, flags, 0xff, 0, 0, 0, ray, payload2);
-			payload.color += 0.45*payload2.color;
-		}
+			ray.TMax = 1000.0;
 
-		if (~flags & RAY_FLAG_CULL_BACK_FACING_TRIANGLES) {
-			RayDesc ray;
-			ray.Origin = intersection;
-			ray.Direction = normalize(ReflectRay(WorldRayDirection(), N));
-			ray.TMin = 0.001;
-			ray.TMax = 100.0;
-
-			float fresnel = 0.5*max(0, min(1, 0.2 + 2 * pow(1.0 + dot(N,WorldRayDirection()),10)));
 			Payload payload2;
-			payload2.count = payload.count;
+			payload2.count = payload.count+1;
 			payload2.mask = float3(1.0,1.0,1.0);
-			TraceRay(Scene, flags, 0xff, 0, 0, 0, ray, payload2);
-			payload.color = payload.color + fresnel*payload2.color;
+			payload2.outside = !payload.outside;
+			TraceRay(Scene, payload2.outside ? RAY_FLAG_CULL_BACK_FACING_TRIANGLES : RAY_FLAG_CULL_FRONT_FACING_TRIANGLES, 0xff, 0, 0, 0, ray, payload2);
+			payload.color += (1-R)*payload2.color;
+		}
+
+		if (payload.count < 2) {
+			RayDesc ray;
+			ray.Origin = intersection;
+			ray.Direction = normalize(ReflectRay(WorldRayDirection(), payload.outside ? N : -N));
+			ray.TMin = 0.001;
+			ray.TMax = 1000.0;
+
+			Payload payload2;
+			payload2.count = payload.count+1;
+			payload2.mask = float3(1.0,1.0,1.0);
+			payload2.outside = payload.outside;
+			TraceRay(Scene, payload2.outside ? RAY_FLAG_CULL_BACK_FACING_TRIANGLES : RAY_FLAG_CULL_FRONT_FACING_TRIANGLES, 0xff, 0, 0, 0, ray, payload2);
+			payload.color += R*payload2.color;
 		}
 	}
 }
@@ -146,9 +127,11 @@ void ClosestHit(inout Payload payload, BuiltInTriangleIntersectionAttributes att
 [shader("miss")]
 void Miss(inout Payload payload)
 {
+	uint width,height;
+	EnvironmentMap.GetDimensions(width, height);
 	float3 r = WorldRayDirection();
-	float theta = 640*(atan2(r.y,r.x) / 3.14159 + 1.0)/2;
-	float phi   = 480*(atan2(r.x,r.z) / 3.14159 + 1.0)/2;
-	payload.color = payload.mask * EnvironmentMap[int2(theta,phi)];
+	float theta = width*(atan2(r.x,r.z) / 3.14159 + 1.0)/2;
+	float phi   = height*(acos(r.y) / 3.14159);
+	payload.color = payload.mask * EnvironmentMap[float2(theta,phi)];
 	((WorldRayDirection().x*WorldRayDirection().y* WorldRayDirection().z >0)? 1.0 : 0.0);
 }

@@ -38,11 +38,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lspzCmdLi
 {
     ATOM wc = InitializeInstance(hInstance);
     HWND hWnd = CreateWindow(MAKEINTATOM(wc), APPNAME, WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 640, 480,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
                              nullptr, nullptr, hInstance, nullptr);
 
     RefractionDemo app;
-    app.initialize(hWnd, 640, 480);
+    app.initialize(hWnd, 1024, 768);
 
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);

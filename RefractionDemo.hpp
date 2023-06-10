@@ -24,6 +24,7 @@ private:
     void waitForCommandsToFinish();
     void createDescriptorHeap();
 
+    int width, height;
     struct {
         DirectX::XMMATRIX proj_inv;
         DirectX::XMVECTOR camera_loc;
