@@ -6,8 +6,71 @@
 #include <vector>
 #include <assert.h>
 
+constexpr int swapchainBufferCount = 2;
 
-void createUploadBuffer(ComPtr<ID3D12Resource>& resource, ComPtr<ID3D12Device5>& device, unsigned size)
+int width, height;
+struct {
+    DirectX::XMMATRIX proj_inv;
+    DirectX::XMVECTOR camera_loc;
+} sceneConstants;
+
+Mesh cubeMesh;
+
+ComPtr<IDXGIFactory2> factory;
+ComPtr<ID3D12Device5> device;
+
+// Cached GPU sizes for descriptors (used for offsets into descriptor tables)
+UINT rtvDescriptorSize;
+UINT dsvDescriptorSize;
+UINT cbvDescriptorSize; // also SRV and UAV
+
+ComPtr<ID3D12DescriptorHeap> rtvHeap;
+ComPtr<ID3D12DescriptorHeap> dsvHeap;
+ComPtr<ID3D12DescriptorHeap> srvHeap;
+
+ComPtr<ID3D12Fence> fence;
+HANDLE fenceEvent;
+volatile UINT64 fenceValue;
+
+ComPtr<ID3D12RootSignature> rootSignature;
+ComPtr<ID3D12RootSignature> localRootSignature;
+ComPtr<IDXGISwapChain3> swapchain;
+
+ComPtr<ID3D12Resource> depthStencilBuffer;
+ComPtr<ID3D12Resource> renderTargets[swapchainBufferCount];
+
+ComPtr<ID3D12Resource> cameraConstantBuffer;
+ComPtr<ID3D12PipelineState> pipelineState;
+
+ComPtr<ID3D12CommandQueue> commandQueue;
+ComPtr<ID3D12CommandAllocator> commandAllocator;
+ComPtr<ID3D12GraphicsCommandList5> commandList;
+
+ComPtr<ID3D12Resource> rtTexture;
+ComPtr<ID3D12Resource> blasScratch;
+ComPtr<ID3D12Resource> blasResult;
+ComPtr<ID3D12Resource> tlasScratch;
+ComPtr<ID3D12Resource> tlasResult;
+ComPtr<ID3D12Resource> instanceDescs;
+ComPtr<ID3D12StateObject> rtPSO;
+ComPtr<ID3D12Resource> raygenTable;
+ComPtr<ID3D12Resource> hitTable;
+ComPtr<ID3D12Resource> missTable;
+ComPtr<ID3D12Resource> envMap;
+
+ComPtr<ID3D12DescriptorHeap> descriptorHeap;
+
+
+
+void wait_until_finished()
+{
+    InterlockedIncrement(&fenceValue);
+    commandQueue->Signal(fence.Get(), fenceValue);
+    fence->SetEventOnCompletion(fenceValue, fenceEvent);
+    WaitForSingleObject(fenceEvent, INFINITE);
+}
+
+void create_upload_buffer(ID3D12Resource** resource, ComPtr<ID3D12Device5>& device, unsigned size)
 {
     D3D12_RESOURCE_DESC resourceDesc;
     resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -30,10 +93,10 @@ void createUploadBuffer(ComPtr<ID3D12Resource>& resource, ComPtr<ID3D12Device5>&
     heapProperties.VisibleNodeMask = 1;
 
     device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&resource));
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(resource));
 }
 
-void copyToBuffer(ComPtr<ID3D12Resource>& resource, void* data, unsigned size)
+void copy_to_buffer(ComPtr<ID3D12Resource>& resource, void* data, unsigned size)
 {
     D3D12_RANGE range = {};
     void* p;
@@ -42,7 +105,41 @@ void copyToBuffer(ComPtr<ID3D12Resource>& resource, void* data, unsigned size)
     resource->Unmap(0, nullptr);
 }
 
-void RefractionDemo::createDevice()
+bool load_texture(ID3D12Resource** texture, ID3D12GraphicsCommandList* commandList, const char* filename)
+{
+    int x, y, n;
+    float* data = stbi_loadf(filename, &x, &y, &n, 3);
+
+    device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
+        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32_FLOAT, x, y),
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(texture));
+    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(*texture, 0, 1);
+
+    ComPtr<ID3D12Resource> uploadBuffer;
+    create_upload_buffer(uploadBuffer.GetAddressOf(), device, uploadBufferSize);
+
+    copy_to_buffer(uploadBuffer, data, x * y * n);
+
+    ComPtr<ID3D12GraphicsCommandList> copyList;
+    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&copyList));
+
+    D3D12_SUBRESOURCE_DATA textureData = {};
+    textureData.pData = data;
+    textureData.RowPitch = x * 3 * sizeof(float);
+    textureData.SlicePitch = textureData.RowPitch * y;
+    UpdateSubresources(copyList.Get(), *texture, uploadBuffer.Get(), 0, 0, 1, &textureData);
+
+    copyList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(*texture, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE));
+    copyList->Close();
+    ID3D12CommandList* const commandLists[] = { copyList.Get() };
+    commandQueue->ExecuteCommandLists(1, commandLists);
+    wait_until_finished();
+
+    stbi_image_free(data);
+    return true;
+}
+
+void createDevice()
 {
     UINT factoryFlags = 0;
 #ifdef _DEBUG
@@ -74,16 +171,9 @@ void RefractionDemo::createDevice()
     cbvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
-void RefractionDemo::createConstants()
-{
-    unsigned size = (sizeof(sceneConstants) + 255u) & ~255u;
-    createUploadBuffer(cameraConstantBuffer, device, size);
-}
-
-
 // Recreate the swapchain and associated stuff like the render targets and
 // the depth/stencil buffer and command allocator+list.
-void RefractionDemo::recreateSwapchain(HWND hwnd, int width, int height)
+void recreateSwapchain(HWND hwnd, int width, int height)
 {
     // Allow re-entry, since this will be called every window resize.
     swapchain.Reset();
@@ -144,15 +234,9 @@ void RefractionDemo::recreateSwapchain(HWND hwnd, int width, int height)
 
     // Create a descriptor on our DSV heap pointing to this texture.
     device->CreateDepthStencilView(depthStencilBuffer.Get(), nullptr, dsvHeap->GetCPUDescriptorHandleForHeapStart());
-
-    // Create a synchronization object which we will use to ensure the GPU is done after swapping buffers.
-    // This is temporary and a bad way of doing things. We should really just use separate command lists
-    // for each back buffer so we can let the GPU continue on ahead of the CPU.
-    fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 }
 
-void RefractionDemo::createSignatures()
+void createSignatures()
 {
     // The root signature is our interface to the shaders. We are simply describing the data here,
     // we provide the contents in drawFrame each frame.
@@ -185,67 +269,7 @@ void RefractionDemo::createSignatures()
     }
 }
 
-void RefractionDemo::createPipelineState()
-{
-    // Create the pipeline state, which includes compiling and loading shaders.
-    ComPtr<ID3DBlob> vertexShader;
-    ComPtr<ID3DBlob> pixelShader;
-
-#ifdef _DEBUG
-    // Enable better shader debugging with the graphics debugging tools.
-    UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    UINT compileFlags = 0;
-#endif
-
-    ComPtr<ID3DBlob> errMsg;
-    if (S_OK != D3DCompileFromFile(L"../Shader1.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, &errMsg))
-        OutputDebugStringA((char*)errMsg->GetBufferPointer());
-    if (S_OK != D3DCompileFromFile(L"../Shader1.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, &errMsg))
-        OutputDebugStringA((char*)errMsg->GetBufferPointer());
-
-    // Define the vertex input layout.
-    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
-    psoDesc.pRootSignature = rootSignature.Get();
-    psoDesc.VS = D3D12_SHADER_BYTECODE{ vertexShader->GetBufferPointer(),vertexShader->GetBufferSize() };
-    psoDesc.PS = D3D12_SHADER_BYTECODE{ pixelShader->GetBufferPointer(),pixelShader->GetBufferSize() };
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    //psoDesc.DepthStencilState.DepthEnable = FALSE;
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.SampleDesc.Count = 1;
-
-    device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState));
-}
-
-void RefractionDemo::uploadConstants()
-{
-    static float angle = 0.01f;
-    DirectX::XMMATRIX proj = DirectX::XMMatrixPerspectiveFovLH(52.0f/180.0*3.1415, 1.333, 1.0f, 125.0f);
-    sceneConstants.camera_loc = { 5*cosf(angle),0,5*sinf(angle),1.0 };
-    DirectX::XMMATRIX world = DirectX::XMMatrixTranslationFromVector(sceneConstants.camera_loc);
-    DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH({cosf(-angle),0.0,sinf(-angle),1.0}, {0.0,0.0,0.0,1.0},{0.0,1.0,0.0,0.0});
-    //mvp *= DirectX::XMMatrixRotationY(angle);
-    DirectX::XMMATRIX projView = proj*world*view;
-
-    sceneConstants.proj_inv = DirectX::XMMatrixInverse(nullptr, projView);
-    copyToBuffer(cameraConstantBuffer, &sceneConstants, sizeof(sceneConstants));
-
-    angle += 0.01f;
-}
-
-void RefractionDemo::setupRaytracingAccelerationStructures()
+void setupRaytracingAccelerationStructures()
 {
     // A top and bottom level acceleration structure must be defined for the
     // geometry. This is essentially a BVH.
@@ -306,8 +330,8 @@ void RefractionDemo::setupRaytracingAccelerationStructures()
     instanceDesc.Flags = 0;
     instanceDesc.InstanceContributionToHitGroupIndex = 0;
     instanceDesc.AccelerationStructure = blasResult->GetGPUVirtualAddress();
-    createUploadBuffer(instanceDescs, device, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
-    copyToBuffer(instanceDescs, &instanceDesc, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
+    create_upload_buffer(instanceDescs.GetAddressOf(), device, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
+    copy_to_buffer(instanceDescs, &instanceDesc, sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS topLevelInputs = {};
     topLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
@@ -342,7 +366,7 @@ IDxcCompiler* compiler;
 IDxcLibrary* library;
 IDxcIncludeHandler* includeHandler;
 
-void RefractionDemo::setupRaytracingPipelineStateObjects()
+void setupRaytracingPipelineStateObjects()
 {
     // Compile the shaders as a library. To do this we need to import a DLL
     // since we need a recent HLSL compiler.
@@ -376,15 +400,9 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
 
     auto subobjDXIL = stateObjectDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
     subobjDXIL->SetDXILLibrary(&CD3DX12_SHADER_BYTECODE(rayGenBytecode->GetBufferPointer(), rayGenBytecode->GetBufferSize()));
-    // Can be omitted, simply adds them all by default.
-    /*subobjDXIL->DefineExport(L"RayGen");
-    subobjDXIL->DefineExport(L"Miss");
-    subobjDXIL->DefineExport(L"ClosestHit");
-    subobjDXIL->DefineExport(L"AnyHit");*/
 
     auto subobjHit = stateObjectDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
     subobjHit->SetHitGroupExport(L"HitGroup");
-    //subobjHit->SetAnyHitShaderImport(L"AnyHit");
     subobjHit->SetClosestHitShaderImport(L"ClosestHit");
     subobjHit->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
     
@@ -407,42 +425,15 @@ void RefractionDemo::setupRaytracingPipelineStateObjects()
     rtPSO->SetName(L"RayTracing PSO");
 }
 
-ComPtr<ID3D12Resource> uploadBuffer;
-
-void RefractionDemo::createRaytracingTexture()
+void createRaytracingTexture()
 {
     device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
         &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&rtTexture));
     rtTexture->SetName(L"RayTracing Texture");
-
-    int x, y, n;
-    float* data = stbi_loadf("../envmap.hdr", &x, &y, &n, 3);
-
-    device->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
-        &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32_FLOAT, x, y),
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&envMap));
-    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(envMap.Get(), 0, 1);
-
-    
-    //std::vector<uint8_t> pixels(640 * 480 * 4);
-    createUploadBuffer(uploadBuffer, device, uploadBufferSize);
-
-    copyToBuffer(uploadBuffer, data, x*y*n);
-
-    D3D12_SUBRESOURCE_DATA textureData = {};
-    textureData.pData = data;
-    textureData.RowPitch = x*3*sizeof(float);
-    textureData.SlicePitch = textureData.RowPitch * y;
-    UpdateSubresources(commandList.Get(), envMap.Get(), uploadBuffer.Get(), 0, 0, 1, &textureData);
-    commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(envMap.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE));
-
-    stbi_image_free(data);
-
-    envMap->SetName(L"Environment Map Texture");
 }
 
-void RefractionDemo::createShaderTables()
+void createShaderTables()
 {
     ComPtr<ID3D12StateObjectProperties> stateObjectProperties;
     rtPSO.As(&stateObjectProperties);
@@ -453,34 +444,26 @@ void RefractionDemo::createShaderTables()
     D3D12_RANGE range = { 0,0 };
     char* p;
 
-    createUploadBuffer(raygenTable, device, 64);
+    create_upload_buffer(raygenTable.GetAddressOf(), device, 64);
     raygenTable->SetName(L"RayGen Table");
     raygenTable->Map(0, &range, (void**)&p);
     memcpy(&p[0], rayGenId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
     raygenTable->Unmap(0, nullptr);
 
-    createUploadBuffer(hitTable, device, 64);
+    create_upload_buffer(hitTable.GetAddressOf(), device, 64);
     hitTable->SetName(L"Hit Table");
     hitTable->Map(0, &range, (void**)&p);
     memcpy(&p[0], hitGroupId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
     hitTable->Unmap(0, nullptr);
 
-    createUploadBuffer(missTable, device, 64);
+    create_upload_buffer(missTable.GetAddressOf(), device, 64);
     missTable->SetName(L"Miss Table");
     missTable->Map(0, &range, (void**)&p);
     memcpy(&p[0], missId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
     missTable->Unmap(0, nullptr);
 }
 
-void RefractionDemo::waitForCommandsToFinish()
-{
-    InterlockedIncrement(&fenceValue);
-    commandQueue->Signal(fence.Get(), fenceValue);
-    fence->SetEventOnCompletion(fenceValue, fenceEvent);
-    WaitForSingleObject(fenceEvent, INFINITE);
-}
-
-void RefractionDemo::createDescriptorHeap()
+void createDescriptorHeap()
 {
     D3D12_DESCRIPTOR_HEAP_DESC srvDesc;
     srvDesc.NodeMask = 0;
@@ -527,18 +510,29 @@ void RefractionDemo::createDescriptorHeap()
     }
 }
 
-void RefractionDemo::initialize(HWND hWnd, int width, int height)
+void RefractionDemo::initialize(HWND hWnd, int width_, int height_)
 {
-    this->width = width;
-    this->height = height;
+    width = width_;
+    height = height_;
 
     createDevice();
+    // Create a synchronization object which we will use to ensure the GPU is done after swapping buffers.
+    // This is temporary and a bad way of doing things. We should really just use separate command lists
+    // for each back buffer so we can let the GPU continue on ahead of the CPU.
+    fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 
     // We should be creating one of these per RTV, for now we just create one.
     device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
+    load_texture(envMap.GetAddressOf(), commandList.Get(), "../envMap.hdr");
+    envMap->SetName(L"Environment Map Texture");
+    
     device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
 
-    createConstants();
+
+    unsigned size = (sizeof(sceneConstants) + 255u) & ~255u;
+    create_upload_buffer(cameraConstantBuffer.GetAddressOf(), device, size);
+
     createSignatures();
     cubeMesh.load("../shell.obj");
     cubeMesh.upload(device);
@@ -548,18 +542,29 @@ void RefractionDemo::initialize(HWND hWnd, int width, int height)
     setupRaytracingPipelineStateObjects();
     createRaytracingTexture();
     createShaderTables();
+
     recreateSwapchain(hWnd, width, height);
     createDescriptorHeap();
 
     commandList->Close();
     ID3D12CommandList* const commandLists[] = { commandList.Get() };
     commandQueue->ExecuteCommandLists(1, commandLists);
-    waitForCommandsToFinish();
+    wait_until_finished();
 }
+
+static float angle = 0.01f;
 
 void RefractionDemo::drawFrame()
 {
-    uploadConstants();
+    DirectX::XMMATRIX proj = DirectX::XMMatrixPerspectiveFovLH(52.0f / 180.0 * 3.1415, 1.333, 1.0f, 125.0f);
+    sceneConstants.camera_loc = { 5 * cosf(angle),0,5 * sinf(angle),1.0 };
+    DirectX::XMMATRIX world = DirectX::XMMatrixTranslationFromVector(sceneConstants.camera_loc);
+    DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH({ cosf(-angle),0.0,sinf(-angle),1.0 }, { 0.0,0.0,0.0,1.0 }, { 0.0,1.0,0.0,0.0 });
+    DirectX::XMMATRIX projView = proj * world * view;
+
+    sceneConstants.proj_inv = DirectX::XMMatrixInverse(nullptr, projView);
+    copy_to_buffer(cameraConstantBuffer, &sceneConstants, sizeof(sceneConstants));
+    angle += 0.01f;
 
     int frameIdx = swapchain->GetCurrentBackBufferIndex();
 
@@ -603,6 +608,6 @@ void RefractionDemo::drawFrame()
     commandQueue->ExecuteCommandLists(1, commandLists);
     swapchain->Present(1, 0);
 
-    waitForCommandsToFinish();
+    wait_until_finished();
 }
 

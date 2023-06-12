@@ -41,8 +41,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lspzCmdLi
                              CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
                              nullptr, nullptr, hInstance, nullptr);
 
-    RefractionDemo app;
-    app.initialize(hWnd, 1024, 768);
+    RefractionDemo::initialize(hWnd, 1024, 768);
 
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
@@ -56,6 +55,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lspzCmdLi
             if (msg.message == WM_QUIT)
                 return (int)msg.wParam;
         }
-        app.drawFrame();
+        RefractionDemo::drawFrame();
     }
 }
